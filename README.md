@@ -73,26 +73,6 @@ BEINGH_CKPT_ROOT=/path/to/ckpts
 BEINGH_ENV=/path/to/conda/env
 ```
 
-## 交付 artifact 清单
-
-主方法只需要上传以下内容：
-
-```text
-数据：data/shadow_grasp_bottle22249179_aug100_2cam
-模型：...20260804_154819/0060000
-VAE ：vae/checkpoints/native_n2_epoch800_inference.pt
-```
-
-physical-joint baseline（2-camera）另外上传：
-
-```text
-数据：data/shadow_grasp_bottle22249179_aug100_2cam
-模型：...20260805_141947/0030000
-```
-
-Sharpa/Gaia 单独训练 baseline 数据和模型只有在需要复现实验时才上传。
-完整路径、上传命令和不需要上传的历史实验清单见
-[`docs/huggingface.md`](docs/huggingface.md)。
 
 ## 下载模型和数据
 
@@ -107,39 +87,6 @@ huggingface-cli download <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
   --local-dir data/shadow_grasp_bottle22249179_aug100_2cam
 ```
 
-其他 baseline 数据集：
-
-```bash
-huggingface-cli download <HF_ORG>/shadow_grasp_0725_core_bottle_1071 \
-  --repo-type dataset \
-  --local-dir data/shadow_grasp_0725_core_bottle_1071
-
-huggingface-cli download <HF_ORG>/sharpa_grasp_bottle22249179_geo_visual100_2cam \
-  --repo-type dataset \
-  --local-dir data/sharpa_grasp_bottle22249179_geo_visual100_2cam
-
-huggingface-cli download <HF_ORG>/gaia_grasp_bottle22249179_geo_visual100_2cam \
-  --repo-type dataset \
-  --local-dir data/gaia_grasp_bottle22249179_geo_visual100_2cam
-```
-
-模型目录应包含 `config.json`、tokenizer 文件和模型权重；LeRobot 数据集应包含
-`meta/`、`data/`，以及需要的视频 `videos/`。
-
-## Hugging Face artifacts
-
-模型和数据不进入 GitHub。创建和上传 Hugging Face model/dataset repo 的完整命令见 [`docs/huggingface.md`](docs/huggingface.md)。最小下载示例：
-
-```bash
-huggingface-cli download <HF_ORG>/Being-H05-2B \
-  --local-dir ckpts/Being-H05-2B
-
-huggingface-cli download <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
-  --repo-type dataset \
-  --local-dir data/shadow_grasp_bottle22249179_aug100_2cam
-```
-
-请在实际交付 README 中将 `<HF_ORG>` 替换为甲方可访问的 organization。
 
 ## 训练
 
@@ -154,16 +101,6 @@ NORMALIZATION=wrist_rot6d_minmax_zraw \
 bash scripts/train/train_shadow_grasp.sh
 ```
 
-常用归一化配置：
-
-```text
-q99
-minmax
-wrist_minmax_zraw
-wrist_euler_minmax_zraw
-wrist_rot6d_minmax_zraw
-wrist_rot6d_minmax_joints
-```
 
 预检但不启动训练：
 
@@ -269,16 +206,6 @@ PYTHONPATH="$PWD" python scripts/smoke_test_beingh05.py \
   --require-local-data
 ```
 
-## 可复现性
-
-每次实验请同时记录：
-
-```text
-Being-H05 Git commit
-VAE source commit
-Hugging Face model revision
-Hugging Face dataset revision
-```
 
 ## 文档
 
