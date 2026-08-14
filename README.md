@@ -60,13 +60,21 @@ BEINGH_ENV=/path/to/conda/env
 
 ## 下载模型和数据
 
-将 `<HF_ORG>` 替换成实际的 Hugging Face organization。
+Being-H05 的基础 checkpoint 使用官方 Hugging Face collection：
+
+<https://huggingface.co/collections/BeingBeyond/being-h05>
+
+下载官方基础模型：
 
 ```bash
-huggingface-cli download <HF_ORG>/Being-H05-2B \
+hf download BeingBeyond/Being-H05-2B \
   --local-dir ckpts/Being-H05-2B
+```
 
-huggingface-cli download <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
+下载主训练数据集：
+
+```bash
+hf download <HF_NAMESPACE>/shadow_grasp_bottle22249179_aug100_2cam \
   --repo-type dataset \
   --local-dir data/shadow_grasp_bottle22249179_aug100_2cam
 ```
