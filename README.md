@@ -74,7 +74,7 @@ hf download BeingBeyond/Being-H05-2B \
 下载主训练数据集：
 
 ```bash
-hf download <HF_NAMESPACE>/shadow_grasp_bottle22249179_aug100_2cam \
+hf download zju/shadow_grasp_bottle22249179_aug100_2cam \
   --repo-type dataset \
   --local-dir data/shadow_grasp_bottle22249179_aug100_2cam
 ```
@@ -82,7 +82,7 @@ hf download <HF_NAMESPACE>/shadow_grasp_bottle22249179_aug100_2cam \
 主策略模型：
 
 ```bash
-hf download <HF_NAMESPACE>/Being-H05-shadow-grasp-2cam-rot6d-zraw \
+hf download zju/Being-H05-shadow-grasp-2cam-rot6d-zraw \
   --local-dir ckpts/Being-H05-shadow-grasp-2cam-rot6d-zraw
 ```
 
@@ -90,7 +90,7 @@ Native VAE：
 
 ```bash
 mkdir -p vae/checkpoints
-hf download <HF_NAMESPACE>/Being-H05-native-vae \
+hf download zju/Being-H05-native-vae \
   native_n2_epoch800_inference.pt \
   --local-dir vae/checkpoints
 ```
@@ -98,7 +98,7 @@ hf download <HF_NAMESPACE>/Being-H05-native-vae \
 physical-joint baseline：
 
 ```bash
-hf download <HF_NAMESPACE>/Being-H05-shadow-grasp-2cam-joints \
+hf download zju/Being-H05-shadow-grasp-2cam-joints \
   --local-dir ckpts/Being-H05-shadow-grasp-2cam-joints
 ```
 

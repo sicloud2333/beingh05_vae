@@ -3,7 +3,7 @@
 GitHub only contains source code. Upload datasets and checkpoints to Hugging
 Face repositories and keep the revision IDs in the experiment record.
 
-Replace `<HF_ORG>` with the actual organization and login once:
+Replace `zju` with the actual organization and login once:
 
 ```bash
 huggingface-cli login
@@ -61,15 +61,15 @@ artifact so the MuJoCo commands in the root README can be run unchanged.
 Create one dataset repository per dataset:
 
 ```bash
-huggingface-cli repo create <HF_ORG>/shadow_grasp_0725 \
+huggingface-cli repo create zju/shadow_grasp_0725 \
   --repo-type dataset
-huggingface-cli repo create <HF_ORG>/shadow_grasp_0725_core_bottle_1071 \
+huggingface-cli repo create zju/shadow_grasp_0725_core_bottle_1071 \
   --repo-type dataset
-huggingface-cli repo create <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
+huggingface-cli repo create zju/shadow_grasp_bottle22249179_aug100_2cam \
   --repo-type dataset
-huggingface-cli repo create <HF_ORG>/sharpa_grasp_bottle22249179_geo_visual100_2cam \
+huggingface-cli repo create zju/sharpa_grasp_bottle22249179_geo_visual100_2cam \
   --repo-type dataset
-huggingface-cli repo create <HF_ORG>/gaia_grasp_bottle22249179_geo_visual100_2cam \
+huggingface-cli repo create zju/gaia_grasp_bottle22249179_geo_visual100_2cam \
   --repo-type dataset
 ```
 
@@ -81,7 +81,7 @@ Hugging Face handles large files through its storage backend.
 DATA_ROOT=/path/to/data
 
 huggingface-cli upload \
-  <HF_ORG>/shadow_grasp_0725 \
+  zju/shadow_grasp_0725 \
   "$DATA_ROOT/shadow_grasp_0725" . \
   --repo-type dataset \
   --exclude='**/__pycache__/**' \
@@ -89,7 +89,7 @@ huggingface-cli upload \
   --exclude='**/*.log'
 
 huggingface-cli upload \
-  <HF_ORG>/shadow_grasp_0725_core_bottle_1071 \
+  zju/shadow_grasp_0725_core_bottle_1071 \
   "$DATA_ROOT/shadow_grasp_0725_core_bottle_1071" . \
   --repo-type dataset \
   --exclude='**/__pycache__/**' \
@@ -97,7 +97,7 @@ huggingface-cli upload \
   --exclude='**/*.log'
 
 huggingface-cli upload \
-  <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
+  zju/shadow_grasp_bottle22249179_aug100_2cam \
   "$DATA_ROOT/shadow_grasp_bottle22249179_aug100_2cam" . \
   --repo-type dataset \
   --exclude='**/__pycache__/**' \
@@ -105,7 +105,7 @@ huggingface-cli upload \
   --exclude='**/*.log'
 
 huggingface-cli upload \
-  <HF_ORG>/sharpa_grasp_bottle22249179_geo_visual100_2cam \
+  zju/sharpa_grasp_bottle22249179_geo_visual100_2cam \
   "$DATA_ROOT/sharpa_grasp_bottle22249179_geo_visual100_2cam" . \
   --repo-type dataset \
   --exclude='**/__pycache__/**' \
@@ -113,7 +113,7 @@ huggingface-cli upload \
   --exclude='**/*.log'
 
 huggingface-cli upload \
-  <HF_ORG>/gaia_grasp_bottle22249179_geo_visual100_2cam \
+  zju/gaia_grasp_bottle22249179_geo_visual100_2cam \
   "$DATA_ROOT/gaia_grasp_bottle22249179_geo_visual100_2cam" . \
   --repo-type dataset \
   --exclude='**/__pycache__/**' \
@@ -125,7 +125,7 @@ Download a dataset on the client machine:
 
 ```bash
 huggingface-cli download \
-  <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
+  zju/shadow_grasp_bottle22249179_aug100_2cam \
   --repo-type dataset \
   --local-dir data/shadow_grasp_bottle22249179_aug100_2cam
 ```
@@ -148,16 +148,16 @@ Create a model repository for the base checkpoint and, preferably, one repo per
 trained experiment:
 
 ```bash
-huggingface-cli repo create <HF_ORG>/Being-H05-2B --repo-type model
-huggingface-cli repo create <HF_ORG>/Being-H05-shadow-grasp-rot6d --repo-type model
-huggingface-cli repo create <HF_ORG>/Being-H05-shadow-grasp-joints --repo-type model
+huggingface-cli repo create zju/Being-H05-2B --repo-type model
+huggingface-cli repo create zju/Being-H05-shadow-grasp-rot6d --repo-type model
+huggingface-cli repo create zju/Being-H05-shadow-grasp-joints --repo-type model
 ```
 
 Upload the base checkpoint:
 
 ```bash
 huggingface-cli upload \
-  <HF_ORG>/Being-H05-2B \
+  zju/Being-H05-2B \
   /path/to/ckpts/Being-H05-2B . \
   --repo-type model \
   --exclude='**/__pycache__/**' \
@@ -172,7 +172,7 @@ RUN=/path/to/outputs/<training-run>
 CKPT=0040000
 
 huggingface-cli upload \
-  <HF_ORG>/Being-H05-shadow-grasp-rot6d \
+  zju/Being-H05-shadow-grasp-rot6d \
   "$RUN/$CKPT" "$CKPT" \
   --repo-type model \
   --exclude='**/__pycache__/**' \
@@ -184,7 +184,7 @@ Download a checkpoint into the layout expected by the evaluation scripts:
 
 ```bash
 huggingface-cli download \
-  <HF_ORG>/Being-H05-shadow-grasp-rot6d \
+  zju/Being-H05-shadow-grasp-rot6d \
   0040000/config.json \
   0040000/model.safetensors \
   --local-dir ckpts/Being-H05-shadow-grasp-rot6d
@@ -195,7 +195,7 @@ folder, download the whole folder instead:
 
 ```bash
 huggingface-cli download \
-  <HF_ORG>/Being-H05-shadow-grasp-rot6d \
+  zju/Being-H05-shadow-grasp-rot6d \
   --include='0040000/**' \
   --local-dir ckpts/Being-H05-shadow-grasp-rot6d
 ```
