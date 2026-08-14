@@ -105,6 +105,21 @@ huggingface-cli download <HF_ORG>/gaia_grasp_bottle22249179_geo_visual100_2cam \
 模型目录应包含 `config.json`、tokenizer 文件和模型权重；LeRobot 数据集应包含
 `meta/`、`data/`，以及需要的视频 `videos/`。
 
+## Hugging Face artifacts
+
+模型和数据不进入 GitHub。创建和上传 Hugging Face model/dataset repo 的完整命令见 [`docs/huggingface.md`](docs/huggingface.md)。最小下载示例：
+
+```bash
+huggingface-cli download <HF_ORG>/Being-H05-2B \
+  --local-dir ckpts/Being-H05-2B
+
+huggingface-cli download <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
+  --repo-type dataset \
+  --local-dir data/shadow_grasp_bottle22249179_aug100_2cam
+```
+
+请在实际交付 README 中将 `<HF_ORG>` 替换为甲方可访问的 organization。
+
 ## 训练
 
 Shadow grasp 的标准训练入口：
