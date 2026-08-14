@@ -78,12 +78,12 @@ BEINGH_ENV=/path/to/conda/env
 主方法只需要上传以下内容：
 
 ```text
-数据：data/shadow_grasp_0725_core_bottle_1071
-模型：...20260802_100014/0040000
+数据：data/shadow_grasp_bottle22249179_aug100_2cam
+模型：...20260804_154819/0060000
 VAE ：vae/checkpoints/native_n2_epoch800_inference.pt
 ```
 
-physical-joint baseline 另外上传：
+physical-joint baseline（2-camera）另外上传：
 
 ```text
 数据：data/shadow_grasp_bottle22249179_aug100_2cam

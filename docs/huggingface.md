@@ -19,8 +19,8 @@ not upload every historical `outputs/` run.
 
 | Artifact | Local source | Purpose |
 |---|---|---|
-| Shadow training data | `data/shadow_grasp_0725_core_bottle_1071` | Reproduce the main VAE policy training/evaluation |
-| VAE policy checkpoint | `outputs/shadow_grasp_bottle_1071/train-shadow_grasp_0725_core_bottle_1071_Being-H05-2B_freeze-mllm-True_chunk-16_tok-8192_norm-wrist_rot6d_minmax_zraw_wristw-1.0_tdelta-0.0_mpg-True_20260802_100014/0040000` | Main wrist Rot6D + raw z_gesture policy |
+| Shadow 2-camera training data | `data/shadow_grasp_bottle22249179_aug100_2cam` | Reproduce the primary VAE policy training/evaluation |
+| Primary VAE policy checkpoint | `outputs/shadow_grasp_bottle22249179_aug100_2cam/train-shadow_grasp_bottle22249179_aug100_2cam_Being-H05-2B_freeze-mllm-True_chunk-16_tok-8192_norm-wrist_rot6d_minmax_zraw_wristw-1.0_tdelta-0.0_mpg-True_20260804_154819/0060000` | Primary wrist Rot6D + raw z_gesture policy |
 | Native VAE checkpoint | `vae/checkpoints/native_n2_epoch800_inference.pt` | Decode z_gesture into target-hand joints |
 
 ### Required for the physical-joint baseline
@@ -42,9 +42,12 @@ outputs/sharpa_grasp_bottle22249179_geo_visual100_2cam_joint/.../0040000
 outputs/gaia_grasp_bottle22249179_geo_visual100_2cam_joint/.../0040000
 ```
 
-The original `data/shadow_grasp_0725` (1207 episodes), smoke runs, perf runs,
-old Euler/q99/min-max experiments and intermediate checkpoints are not needed
-for the main delivery. Keep them as an internal archive.
+The older `data/shadow_grasp_0725_core_bottle_1071` (52 episodes) and its
+`...20260802_100014/0040000` VAE checkpoint may be uploaded as an optional
+legacy experiment. The original `data/shadow_grasp_0725` (1207 episodes), smoke
+runs, perf runs, old Euler/q99/min-max experiments and other intermediate
+checkpoints are not needed for the main delivery. Keep them as an internal
+archive.
 
 ### Lightweight evaluation manifests
 
