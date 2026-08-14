@@ -27,22 +27,6 @@ assets/                 仓库级资源
 `vae/` 在本交付版本中保留为源码快照，以保证跨手评估代码与当前版本一致。
 它不包含 VAE checkpoint、数据集或训练输出。
 
-## 重要默认行为
-
-新的 MuJoCo evaluation 默认使用：
-
-```text
-latent-observation-mode = commanded
-inference-mode          = sync
-action-selection        = chunk
-```
-
-如需复现 encoded feedback，必须显式添加：
-
-```bash
---latent-observation-mode encoded
-```
-
 ## 安装
 
 ```bash
