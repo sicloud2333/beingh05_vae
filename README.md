@@ -9,8 +9,7 @@
 - geometry retargeting baseline；
 - Shadow、Sharpa、Gaia 的 MuJoCo evaluation 入口。
 
-数据集、checkpoint、训练输出、视频和实验日志不上传 GitHub，统一从
-Hugging Face 单独下载。
+数据集、checkpoint需要从Hugging Face 单独下载。
 
 ## 目录结构
 
@@ -23,9 +22,6 @@ docs/                   训练、推理、评估和发布说明
 vae/                    Native VAE、仿真资产和 geometry baseline
 assets/                 仓库级资源
 ```
-
-`vae/` 在本交付版本中保留为源码快照，以保证跨手评估代码与当前版本一致。
-它不包含 VAE checkpoint、数据集或训练输出。
 
 ## 安装
 
@@ -102,7 +98,7 @@ hf download zju/Being-H05-shadow-grasp-2cam-joints \
   --local-dir ckpts/Being-H05-shadow-grasp-2cam-joints
 ```
 
-Sharpa/Gaia 的可选数据和 baseline 下载命令见 [`docs/huggingface.md`](docs/huggingface.md)。
+Sharpa/Gaia 的可选数据和 baseline 请从对应的 Hugging Face 组织仓库下载。
 
 官方依赖模型：
 
@@ -121,15 +117,6 @@ NUM_GPUS=2 \
 BEINGH_ENV=/path/to/conda/env \
 EMBODIMENT_DATASET=shadow_grasp_bottle22249179_aug100_2cam \
 NORMALIZATION=wrist_rot6d_minmax_zraw \
-bash scripts/train/train_shadow_grasp.sh
-```
-
-
-预检但不启动训练：
-
-```bash
-PREFLIGHT_ONLY=True \
-BEINGH_ENV=/path/to/conda/env \
 bash scripts/train/train_shadow_grasp.sh
 ```
 
@@ -165,7 +152,7 @@ bash scripts/eval/eval_shadow_open_loop.sh \
 bash scripts/eval/eval_shadow_grasp.sh \
   --model-path outputs/<training-run>/0040000 \
   --dataset vae/evaluation/object_episodes/<manifest>.jsonl \
-  --episode-range 0 7 \
+  --episode-range 0 99 \
   --hand shadow_hand_right \
   --device cuda:0
 ```
@@ -176,19 +163,9 @@ Sharpa/Gaia zero-shot：
 bash scripts/eval/eval_shadow_grasp.sh \
   --model-path outputs/<training-run>/0040000 \
   --dataset vae/evaluation/object_episodes/<manifest>.jsonl \
-  --episode-range 0 7 \
+  --episode-range 0 99 \
   --hand sharpa_hand_right \
   --device cuda:0
-```
-
-默认 profile 是 `safe_smooth`。如需原始动作：
-
-```bash
-bash scripts/eval/eval_shadow_grasp.sh \
-  ... \
-  --deployment-profile legacy \
-  --execution-mode raw \
-  --no-native-joint-rate-limit
 ```
 
 ## Geometry baseline
@@ -199,7 +176,7 @@ Shadow physical-joint checkpoint 在 Sharpa/Gaia 上使用 geometry retargeting�
 bash scripts/eval/eval_shadow_grasp.sh \
   --model-path outputs/<joint-baseline-run>/0040000 \
   --dataset vae/evaluation/object_episodes/<manifest>.jsonl \
-  --episode-range 0 7 \
+  --episode-range 0 99 \
   --hand sharpa_hand_right \
   --joint-retargeting geometry \
   --geometry-action-chunk-mode batch \
@@ -238,9 +215,3 @@ PYTHONPATH="$PWD" python scripts/smoke_test_beingh05.py \
 - [Data configuration](docs/data_configuration.md)
 - [Unified action space](docs/unified_action_space.md)
 - [Release layout](docs/release.md)
-
-## License
-
-Copyright (c) 2026 BeingBeyond Ltd. and/or its affiliates.
-
-SPDX-License-Identifier: Apache-2.0
