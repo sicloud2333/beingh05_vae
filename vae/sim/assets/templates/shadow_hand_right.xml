@@ -1,0 +1,244 @@
+<mujoco model="shadow_hand_right_template">
+  <compiler angle="radian" />
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast">
+    <flag contact="enable" gravity="enable" />
+  </option>
+  <visual>
+    <global azimuth="135" elevation="-25" offwidth="640" offheight="480" />
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.35 0.35 0.35" specular="0.015 0.015 0.015" />
+    <quality shadowsize="4096" />
+  </visual>
+  <statistic center="0 0 0.18" extent="0.75" />
+  <default>
+    <geom condim="4" friction="0.9 0.01 0.001" solref="0.01 1" solimp="0.95 0.99 0.001" />
+  </default>
+  <asset>
+    <material name="object_placeholder_mat" rgba="0.48 0.63 0.74 1" specular="0.12" shininess="0.25" />
+    <material name="table_mat" texture="table_tex" texrepeat="4 4" texuniform="true" specular="0.08" shininess="0.15" reflectance="0.02" />
+    <texture name="table_tex" type="2d" builtin="checker" rgb1="0.72 0.74 0.72" rgb2="0.62 0.65 0.63" width="512" height="512" />
+    <texture name="sky" type="skybox" builtin="gradient" rgb1="0.96 0.97 0.98" rgb2="0.82 0.86 0.90" width="512" height="3072" />
+    <material name="floor_mat" rgba="0.86 0.82 0.72 1" specular="0.015" shininess="0.02" reflectance="0.005" />
+    <material name="sort_box_mat" rgba="0.72 0.78 0.66 1" specular="0.02" shininess="0.04" reflectance="0.01" />
+    <mesh name="palm_E3M5" file="../hands/shadow/meshes/visual/palm_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="f_knuckle_E3M5" file="../hands/shadow/meshes/collision/f_knuckle_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="f_knuckle_E3M51" file="../hands/shadow/meshes/collision/f_knuckle_E3M5.obj" />
+    <mesh name="f_proximal_E3M5" file="../hands/shadow/meshes/visual/f_proximal_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="f_middle_E3M5" file="../hands/shadow/meshes/visual/f_middle_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="f_distal_pst" file="../hands/shadow/meshes/collision/f_distal_pst.obj" scale="0.001 0.001 0.001" />
+    <mesh name="lf_metacarpal_E3M5" file="../hands/shadow/meshes/visual/lf_metacarpal_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="th_proximal_visual" file="../hands/shadow/meshes/visual/th_proximal_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="th_proximal_collision" file="../hands/shadow/meshes/collision/th_proximal_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="th_middle_visual" file="../hands/shadow/meshes/visual/th_middle_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="th_middle_collision" file="../hands/shadow/meshes/collision/th_middle_E3M5.obj" scale="0.001 0.001 0.001" />
+    <mesh name="th_distal_pst" file="../hands/shadow/meshes/visual/th_distal_pst.obj" scale="0.001 0.001 0.001" />
+  </asset>
+  <worldbody>
+    <body name="wrist_x_link">
+      <inertial pos="0 0 0" mass="0.01" diaginertia="1e-06 1e-06 1e-06" />
+      <joint name="wrist_x" pos="0 0 0" axis="1 0 0" type="slide" range="-1 1" actuatorfrcrange="-2000 2000" damping="80" />
+      <body name="wrist_y_link">
+        <inertial pos="0 0 0" mass="0.01" diaginertia="1e-06 1e-06 1e-06" />
+        <joint name="wrist_y" pos="0 0 0" axis="0 1 0" type="slide" range="-1 1" actuatorfrcrange="-2000 2000" damping="80" />
+        <body name="wrist_z_link">
+          <inertial pos="0 0 0" mass="0.01" diaginertia="1e-06 1e-06 1e-06" />
+          <joint name="wrist_z" pos="0 0 0" axis="0 0 1" type="slide" range="-1 1" actuatorfrcrange="-2000 2000" damping="80" />
+          <body name="wrist_rx_link">
+            <inertial pos="0 0 0" mass="0.01" diaginertia="1e-06 1e-06 1e-06" />
+            <joint name="wrist_rx" pos="0 0 0" axis="1 0 0" range="-3.1416 3.1416" actuatorfrcrange="-1000 1000" damping="30" />
+            <body name="wrist_ry_link">
+              <inertial pos="0 0 0" mass="0.01" diaginertia="1e-06 1e-06 1e-06" />
+              <joint name="wrist_ry" pos="0 0 0" axis="0 1 0" range="-3.1416 3.1416" actuatorfrcrange="-1000 1000" damping="30" />
+              <body name="wrist_rz_link">
+                <inertial pos="0 0 0.033871" quat="0.707107 0 0 0.707107" mass="0.31" diaginertia="0.000541555 0.000370955 0.000192" />
+                <joint name="wrist_rz" pos="0 0 0" axis="0 0 1" range="-3.1416 3.1416" actuatorfrcrange="-1000 1000" damping="30" />
+                <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="palm_E3M5" />
+                <geom size="0.031 0.0035 0.045" pos="0.011 0.0085 0.042" type="box" />
+                <geom size="0.018 0.0085 0.045" pos="-0.002 -0.0035 0.042" type="box" />
+                <geom size="0.013 0.0085 0.005" pos="0.029 -0.0035 0.082" type="box" />
+                <geom size="0.013 0.007 0.009" pos="0.0265 -0.001 0.07" quat="0.987241 0.0990545 0.0124467 0.124052" type="box" />
+                <geom size="0.0105 0.0135 0.008" pos="0.0315 -0.0085 0.005" type="box" />
+                <geom size="0.011 0.0025 0.016" pos="0.0125 -0.015 0.013" quat="0.971338 0 0 -0.237703" type="box" />
+                <geom size="0.009 0.012 0.002" pos="0.011 0 0.089" type="box" />
+                <geom size="0.01 0.012 0.016" pos="-0.03 0 0.013" type="box" />
+                <body name="ffknuckle" pos="0.033 0 0.095">
+                  <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="0.008" diaginertia="3.2e-07 2.6e-07 2.6e-07" />
+                  <joint name="FFJ4" pos="0 0 0" axis="0 -1 0" range="-0.349066 0.349066" actuatorfrcrange="-2 2" damping="0.1" />
+                  <geom pos="0 0 0.0005" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_knuckle_E3M5" />
+                  <geom type="mesh" mesh="f_knuckle_E3M51" />
+                  <body name="ffproximal">
+                    <inertial pos="0 0 0.0225" quat="0.707107 0 0 0.707107" mass="0.03" diaginertia="1e-05 9.8e-06 1.8e-06" />
+                    <joint name="FFJ3" pos="0 0 0" axis="1 0 0" range="-0.261799 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                    <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_proximal_E3M5" />
+                    <geom size="0.007 0.02" pos="0 0 0.025" type="cylinder" />
+                    <body name="ffmiddle" pos="0 0 0.045">
+                      <inertial pos="0 0 0.0125" quat="0.707107 0 0 0.707107" mass="0.017" diaginertia="2.7e-06 2.6e-06 8.7e-07" />
+                      <joint name="FFJ2" pos="0 0 0" axis="1 0 0" range="0 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                      <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_middle_E3M5" />
+                      <geom size="0.007 0.0125" pos="0 0 0.0125" type="cylinder" />
+                      <geom size="0.007" />
+                      <geom size="0.007" pos="0 0 0.025" />
+                      <body name="ffdistal" pos="0 0 0.025">
+                        <inertial pos="0 0 0.0121157" quat="0.707107 0 0 0.707107" mass="0.121" diaginertia="1.11944e-05 9.59438e-06 5.3e-06" />
+                        <joint name="FFJ1" pos="0 0 0" axis="1 0 0" range="0 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_distal_pst" />
+                        <geom type="mesh" mesh="f_distal_pst" />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+                <body name="mfknuckle" pos="0.011 0 0.099">
+                  <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="0.008" diaginertia="3.2e-07 2.6e-07 2.6e-07" />
+                  <joint name="MFJ4" pos="0 0 0" axis="0 -1 0" range="-0.349066 0.349066" actuatorfrcrange="-2 2" damping="0.1" />
+                  <geom pos="0 0 0.0005" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_knuckle_E3M5" />
+                  <geom type="mesh" mesh="f_knuckle_E3M5" />
+                  <body name="mfproximal">
+                    <inertial pos="0 0 0.0225" quat="0.707107 0 0 0.707107" mass="0.03" diaginertia="1e-05 9.8e-06 1.8e-06" />
+                    <joint name="MFJ3" pos="0 0 0" axis="1 0 0" range="-0.261799 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                    <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_proximal_E3M5" />
+                    <geom size="0.007 0.02" pos="0 0 0.025" type="cylinder" />
+                    <body name="mfmiddle" pos="0 0 0.045">
+                      <inertial pos="0 0 0.0125" quat="0.707107 0 0 0.707107" mass="0.017" diaginertia="2.7e-06 2.6e-06 8.7e-07" />
+                      <joint name="MFJ2" pos="0 0 0" axis="1 0 0" range="0 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                      <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_middle_E3M5" />
+                      <geom size="0.007 0.0125" pos="0 0 0.0125" type="cylinder" />
+                      <geom size="0.007" />
+                      <geom size="0.007" pos="0 0 0.025" />
+                      <body name="mfdistal" pos="0 0 0.025">
+                        <inertial pos="0 0 0.0121157" quat="0.707107 0 0 0.707107" mass="0.121" diaginertia="1.11944e-05 9.59438e-06 5.3e-06" />
+                        <joint name="MFJ1" pos="0 0 0" axis="1 0 0" range="0 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_distal_pst" />
+                        <geom type="mesh" mesh="f_distal_pst" />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+                <body name="rfknuckle" pos="-0.011 0 0.095">
+                  <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="0.008" diaginertia="3.2e-07 2.6e-07 2.6e-07" />
+                  <joint name="RFJ4" pos="0 0 0" axis="0 1 0" range="-0.349066 0.349066" actuatorfrcrange="-2 2" damping="0.1" />
+                  <geom pos="0 0 0.0005" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_knuckle_E3M5" />
+                  <geom type="mesh" mesh="f_knuckle_E3M5" />
+                  <body name="rfproximal">
+                    <inertial pos="0 0 0.0225" quat="0.707107 0 0 0.707107" mass="0.03" diaginertia="1e-05 9.8e-06 1.8e-06" />
+                    <joint name="RFJ3" pos="0 0 0" axis="1 0 0" range="-0.261799 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                    <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_proximal_E3M5" />
+                    <geom size="0.007 0.02" pos="0 0 0.025" type="cylinder" />
+                    <body name="rfmiddle" pos="0 0 0.045">
+                      <inertial pos="0 0 0.0125" quat="0.707107 0 0 0.707107" mass="0.017" diaginertia="2.7e-06 2.6e-06 8.7e-07" />
+                      <joint name="RFJ2" pos="0 0 0" axis="1 0 0" range="0 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                      <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_middle_E3M5" />
+                      <geom size="0.007 0.0125" pos="0 0 0.0125" type="cylinder" />
+                      <geom size="0.007" />
+                      <geom size="0.007" pos="0 0 0.025" />
+                      <body name="rfdistal" pos="0 0 0.025">
+                        <inertial pos="0 0 0.0121157" quat="0.707107 0 0 0.707107" mass="0.121" diaginertia="1.11944e-05 9.59438e-06 5.3e-06" />
+                        <joint name="RFJ1" pos="0 0 0" axis="1 0 0" range="0 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_distal_pst" />
+                        <geom type="mesh" mesh="f_distal_pst" />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+                <body name="lfmetacarpal" pos="-0.033 0 0.02071" quat="0.887018 0 -0.461735 0">
+                  <inertial pos="0.0317487 0 0.0223529" quat="0.707107 0 0 0.707107" mass="0.03" diaginertia="1.638e-05 1.45e-05 4.272e-06" />
+                  <joint name="LFJ5" pos="0 0 0" axis="1 0 0" range="0 0.785398" actuatorfrcrange="-2 2" damping="0.1" />
+                  <geom quat="0.887018 0 0.461735 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="lf_metacarpal_E3M5" />
+                  <geom size="0.009 0.012 0.02" pos="0.0269864 0 0.019" quat="0.887018 0 0.461735 0" type="box" />
+                  <body name="lfknuckle" pos="0.0539727 0 0.0377946" quat="0.887018 0 0.461735 0">
+                    <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="0.008" diaginertia="3.2e-07 2.6e-07 2.6e-07" />
+                    <joint name="LFJ4" pos="0 0 0" axis="0 1 0" range="-0.349066 0.349066" actuatorfrcrange="-2 2" damping="0.1" />
+                    <geom pos="0 0 0.0005" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_knuckle_E3M5" />
+                    <geom type="mesh" mesh="f_knuckle_E3M5" />
+                    <body name="lfproximal">
+                      <inertial pos="0 0 0.0225" quat="0.707107 0 0 0.707107" mass="0.03" diaginertia="1e-05 9.8e-06 1.8e-06" />
+                      <joint name="LFJ3" pos="0 0 0" axis="1 0 0" range="-0.261799 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                      <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_proximal_E3M5" />
+                      <geom size="0.007 0.02" pos="0 0 0.025" type="cylinder" />
+                      <body name="lfmiddle" pos="0 0 0.045">
+                        <inertial pos="0 0 0.0125" quat="0.707107 0 0 0.707107" mass="0.017" diaginertia="2.7e-06 2.6e-06 8.7e-07" />
+                        <joint name="LFJ2" pos="0 0 0" axis="1 0 0" range="0 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_middle_E3M5" />
+                        <geom size="0.007 0.0125" pos="0 0 0.0125" type="cylinder" />
+                        <geom size="0.007" />
+                        <geom size="0.007" pos="0 0 0.025" />
+                        <body name="lfdistal" pos="0 0 0.025">
+                          <inertial pos="0 0 0.0121157" quat="0.707107 0 0 0.707107" mass="0.121" diaginertia="1.11944e-05 9.59438e-06 5.3e-06" />
+                          <joint name="LFJ1" pos="0 0 0" axis="1 0 0" range="0 1.5708" actuatorfrcrange="-2 2" damping="0.1" />
+                          <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="f_distal_pst" />
+                          <geom type="mesh" mesh="f_distal_pst" />
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+                <body name="thbase" pos="0.034 -0.00858 0.029" quat="0.653281 -0.270598 0.270598 -0.653281">
+                  <inertial pos="0 0 0" mass="0.01" diaginertia="1.6e-07 1.6e-07 1.6e-07" />
+                  <joint name="THJ5" pos="0 0 0" axis="0 0 -1" range="-1.0472 1.0472" actuatorfrcrange="-5 5" damping="0.2" />
+                  <geom size="0.0005 0.0005 0.0005" type="box" contype="0" conaffinity="0" group="1" density="0" />
+                  <geom size="0.011" />
+                  <body name="thproximal">
+                    <inertial pos="0 0 0.019" mass="0.04" diaginertia="1.36e-05 1.36e-05 3.13e-06" />
+                    <joint name="THJ4" pos="0 0 0" axis="0 1 0" range="0 1.22173" actuatorfrcrange="-3 3" damping="0.2" />
+                    <geom quat="0.707107 0 0 0.707107" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="th_proximal_visual" />
+                    <geom type="mesh" mesh="th_proximal_collision" />
+                    <body name="thhub" pos="0 0 0.038">
+                      <inertial pos="0 0 0" mass="0.005" diaginertia="1e-06 1e-06 3e-07" />
+                      <joint name="THJ3" pos="0 0 0" axis="0 1 0" range="-0.20944 0.20944" actuatorfrcrange="-2 2" damping="0.2" />
+                      <geom size="0.01" />
+                      <body name="thmiddle">
+                        <inertial pos="0 0 0.016" mass="0.02" diaginertia="5.1e-06 5.1e-06 1.21e-06" />
+                        <joint name="THJ2" pos="0 0 0" axis="1 0 0" range="-0.698132 0.698132" actuatorfrcrange="-2 2" damping="0.1" />
+                        <geom quat="0.707107 0 0 0.707107" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="th_middle_visual" />
+                        <geom type="mesh" mesh="th_middle_collision" />
+                        <body name="thdistal" pos="0 0 0.032">
+                          <inertial pos="0 0 0.0138354" quat="0.707107 0 0 0.707107" mass="0.161" diaginertia="2.21879e-05 2.11879e-05 1e-05" />
+                          <joint name="THJ1" pos="0 0 0" axis="1 0 0" range="-0.261799 1.5708" actuatorfrcrange="-1 1" damping="0.2" />
+                          <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="th_distal_pst" />
+                          <geom type="mesh" mesh="th_distal_pst" />
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+    <body name="object" pos="0 0 0.035">
+      <freejoint name="object_joint" />
+      <inertial pos="0 0 0" mass="0.10" diaginertia="0.0001 0.0001 0.0001" />
+      <geom name="object_placeholder" type="box" size="0.035 0.035 0.035" rgba="0.48 0.63 0.74 1" />
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="ctrl_x" joint="wrist_x" kp="2500" forcerange="-2000 2000" />
+    <position name="ctrl_y" joint="wrist_y" kp="2500" forcerange="-2000 2000" />
+    <position name="ctrl_z" joint="wrist_z" kp="2500" forcerange="-2000 2000" />
+    <position name="ctrl_rx" joint="wrist_rx" kp="600" forcerange="-1000 1000" />
+    <position name="ctrl_ry" joint="wrist_ry" kp="600" forcerange="-1000 1000" />
+    <position name="ctrl_rz" joint="wrist_rz" kp="600" forcerange="-1000 1000" />
+    <position name="ctrl_FFJ4" joint="FFJ4" kp="12" forcerange="-5 5" />
+    <position name="ctrl_FFJ3" joint="FFJ3" kp="12" forcerange="-5 5" />
+    <position name="ctrl_FFJ2" joint="FFJ2" kp="12" forcerange="-5 5" />
+    <position name="ctrl_FFJ1" joint="FFJ1" kp="12" forcerange="-5 5" />
+    <position name="ctrl_MFJ4" joint="MFJ4" kp="12" forcerange="-5 5" />
+    <position name="ctrl_MFJ3" joint="MFJ3" kp="12" forcerange="-5 5" />
+    <position name="ctrl_MFJ2" joint="MFJ2" kp="12" forcerange="-5 5" />
+    <position name="ctrl_MFJ1" joint="MFJ1" kp="12" forcerange="-5 5" />
+    <position name="ctrl_RFJ4" joint="RFJ4" kp="12" forcerange="-5 5" />
+    <position name="ctrl_RFJ3" joint="RFJ3" kp="12" forcerange="-5 5" />
+    <position name="ctrl_RFJ2" joint="RFJ2" kp="12" forcerange="-5 5" />
+    <position name="ctrl_RFJ1" joint="RFJ1" kp="12" forcerange="-5 5" />
+    <position name="ctrl_LFJ5" joint="LFJ5" kp="12" forcerange="-5 5" />
+    <position name="ctrl_LFJ4" joint="LFJ4" kp="12" forcerange="-5 5" />
+    <position name="ctrl_LFJ3" joint="LFJ3" kp="12" forcerange="-5 5" />
+    <position name="ctrl_LFJ2" joint="LFJ2" kp="12" forcerange="-5 5" />
+    <position name="ctrl_LFJ1" joint="LFJ1" kp="12" forcerange="-5 5" />
+    <position name="ctrl_THJ5" joint="THJ5" kp="12" forcerange="-5 5" />
+    <position name="ctrl_THJ4" joint="THJ4" kp="12" forcerange="-5 5" />
+    <position name="ctrl_THJ3" joint="THJ3" kp="12" forcerange="-5 5" />
+    <position name="ctrl_THJ2" joint="THJ2" kp="12" forcerange="-5 5" />
+    <position name="ctrl_THJ1" joint="THJ1" kp="12" forcerange="-5 5" />
+  </actuator>
+</mujoco>

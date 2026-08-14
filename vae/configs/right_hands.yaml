@@ -1,0 +1,212 @@
+version: 1
+semantic_frame:
+  origin: index_middle_ring_little_root_centroid
+  lateral: little_root_to_index_root
+  longitudinal: mean_four_finger_root_to_pad_at_zero
+  orthogonalization: keep_longitudinal_then_gram_schmidt_lateral
+  normal: lateral_cross_longitudinal
+
+hands:
+  shadow_hand_right:
+    urdf_path: assets/shadow/shadow_hand_right.urdf
+    palm_link: palm
+    fixed_fk_joints:
+      WRJ2: 0.0
+      WRJ1: 0.0
+    active_joint_names:
+      - FFJ4
+      - FFJ3
+      - FFJ2
+      - FFJ1
+      - MFJ4
+      - MFJ3
+      - MFJ2
+      - MFJ1
+      - RFJ4
+      - RFJ3
+      - RFJ2
+      - RFJ1
+      - LFJ5
+      - LFJ4
+      - LFJ3
+      - LFJ2
+      - LFJ1
+      - THJ5
+      - THJ4
+      - THJ3
+      - THJ2
+      - THJ1
+    joint_semantics:
+      FFJ4: {finger: index, slot: 0}
+      FFJ3: {finger: index, slot: 1}
+      FFJ2: {finger: index, slot: 2}
+      FFJ1: {finger: index, slot: 3}
+      MFJ4: {finger: middle, slot: 0}
+      MFJ3: {finger: middle, slot: 1}
+      MFJ2: {finger: middle, slot: 2}
+      MFJ1: {finger: middle, slot: 3}
+      RFJ4: {finger: ring, slot: 0}
+      RFJ3: {finger: ring, slot: 1}
+      RFJ2: {finger: ring, slot: 2}
+      RFJ1: {finger: ring, slot: 3}
+      LFJ5: {finger: little, slot: 0}
+      LFJ4: {finger: little, slot: 1}
+      LFJ3: {finger: little, slot: 2}
+      LFJ2: {finger: little, slot: 3}
+      LFJ1: {finger: little, slot: 4}
+      THJ5: {finger: thumb, slot: 0}
+      THJ4: {finger: thumb, slot: 1}
+      THJ3: {finger: thumb, slot: 2}
+      THJ2: {finger: thumb, slot: 3}
+      THJ1: {finger: thumb, slot: 4}
+    fingers:
+      thumb:
+        alignment_link: thbase
+        chain_points: [thbase, thproximal, thmiddle]
+        pad: {link: thdistal, offset: [0.0, -0.00627631, 0.02635380]}
+      index:
+        alignment_link: ffknuckle
+        chain_points: [ffknuckle, ffproximal, ffmiddle]
+        pad: {link: ffdistal, offset: [0.0, -0.00523995, 0.02554744]}
+      middle:
+        alignment_link: mfknuckle
+        chain_points: [mfknuckle, mfproximal, mfmiddle]
+        pad: {link: mfdistal, offset: [0.0, -0.00523995, 0.02554744]}
+      ring:
+        alignment_link: rfknuckle
+        chain_points: [rfknuckle, rfproximal, rfmiddle]
+        pad: {link: rfdistal, offset: [0.0, -0.00523995, 0.02554744]}
+      little:
+        alignment_link: lfknuckle
+        chain_points: [lfmetacarpal, lfknuckle, lfproximal]
+        pad: {link: lfdistal, offset: [0.0, -0.00523995, 0.02554744]}
+
+  gaia_hand_right:
+    urdf_path: assets/gaia/right_gaiahand.urdf
+    palm_link: right_base_link
+    fixed_fk_joints: {}
+    active_joint_names:
+      - right_little_joint_1
+      - right_little_joint_2
+      - right_little_joint_3
+      - right_ring_joint_1
+      - right_ring_joint_2
+      - right_ring_joint_3
+      - right_middle_joint_1
+      - right_middle_joint_2
+      - right_middle_joint_3
+      - right_index_joint_1
+      - right_index_joint_2
+      - right_index_joint_3
+      - right_thumb_joint_1
+      - right_thumb_joint_2
+      - right_thumb_joint_3
+    joint_semantics:
+      right_little_joint_1: {finger: little, slot: 1}
+      right_little_joint_2: {finger: little, slot: 2}
+      right_little_joint_3: {finger: little, slot: 4}
+      right_ring_joint_1: {finger: ring, slot: 0}
+      right_ring_joint_2: {finger: ring, slot: 1}
+      right_ring_joint_3: {finger: ring, slot: 3}
+      right_middle_joint_1: {finger: middle, slot: 0}
+      right_middle_joint_2: {finger: middle, slot: 1}
+      right_middle_joint_3: {finger: middle, slot: 3}
+      right_index_joint_1: {finger: index, slot: 0}
+      right_index_joint_2: {finger: index, slot: 1}
+      right_index_joint_3: {finger: index, slot: 3}
+      right_thumb_joint_1: {finger: thumb, slot: 0}
+      right_thumb_joint_2: {finger: thumb, slot: 1}
+      right_thumb_joint_3: {finger: thumb, slot: 4}
+    fingers:
+      thumb:
+        alignment_link: right_thumb_link_1
+        chain_points: [right_thumb_link_1, right_thumb_link_2, right_thumb_link_3]
+        pad: {link: right_thumb_link_3, offset: [0.03494428, 0.00355923, 0.00496568]}
+      index:
+        alignment_link: right_index_link_1
+        chain_points: [right_index_link_1, right_index_link_2, right_index_link_3]
+        pad: {link: right_index_link_3, offset: [0.03495411, 0.00373481, 0.00351759]}
+      middle:
+        alignment_link: right_middle_link_1
+        chain_points: [right_middle_link_1, right_middle_link_2, right_middle_link_3]
+        pad: {link: right_middle_link_3, offset: [0.03495411, 0.00373481, 0.00351759]}
+      ring:
+        alignment_link: right_ring_link_1
+        chain_points: [right_ring_link_1, right_ring_link_2, right_ring_link_3]
+        pad: {link: right_ring_link_3, offset: [0.03494428, 0.00386129, 0.00351739]}
+      little:
+        alignment_link: right_little_link_1
+        chain_points: [right_little_link_1, right_little_link_2, right_little_link_3]
+        pad: {link: right_little_link_3, offset: [0.03495411, 0.00373481, 0.00351759]}
+
+  sharpa_hand_right:
+    urdf_path: assets/sharpa/right_sharpa_wave.urdf
+    palm_link: right_hand_C_MC
+    fixed_fk_joints: {}
+    active_joint_names:
+      - right_thumb_CMC_FE
+      - right_thumb_CMC_AA
+      - right_thumb_MCP_FE
+      - right_thumb_MCP_AA
+      - right_thumb_IP
+      - right_index_MCP_FE
+      - right_index_MCP_AA
+      - right_index_PIP
+      - right_index_DIP
+      - right_middle_MCP_FE
+      - right_middle_MCP_AA
+      - right_middle_PIP
+      - right_middle_DIP
+      - right_ring_MCP_FE
+      - right_ring_MCP_AA
+      - right_ring_PIP
+      - right_ring_DIP
+      - right_pinky_CMC
+      - right_pinky_MCP_FE
+      - right_pinky_MCP_AA
+      - right_pinky_PIP
+      - right_pinky_DIP
+    joint_semantics:
+      right_thumb_CMC_FE: {finger: thumb, slot: 0}
+      right_thumb_CMC_AA: {finger: thumb, slot: 1}
+      right_thumb_MCP_FE: {finger: thumb, slot: 2}
+      right_thumb_MCP_AA: {finger: thumb, slot: 3}
+      right_thumb_IP: {finger: thumb, slot: 4}
+      right_index_MCP_FE: {finger: index, slot: 0}
+      right_index_MCP_AA: {finger: index, slot: 1}
+      right_index_PIP: {finger: index, slot: 2}
+      right_index_DIP: {finger: index, slot: 3}
+      right_middle_MCP_FE: {finger: middle, slot: 0}
+      right_middle_MCP_AA: {finger: middle, slot: 1}
+      right_middle_PIP: {finger: middle, slot: 2}
+      right_middle_DIP: {finger: middle, slot: 3}
+      right_ring_MCP_FE: {finger: ring, slot: 0}
+      right_ring_MCP_AA: {finger: ring, slot: 1}
+      right_ring_PIP: {finger: ring, slot: 2}
+      right_ring_DIP: {finger: ring, slot: 3}
+      right_pinky_CMC: {finger: little, slot: 0}
+      right_pinky_MCP_FE: {finger: little, slot: 1}
+      right_pinky_MCP_AA: {finger: little, slot: 2}
+      right_pinky_PIP: {finger: little, slot: 3}
+      right_pinky_DIP: {finger: little, slot: 4}
+    fingers:
+      thumb:
+        alignment_link: right_thumb_CMC_VL
+        chain_points: [right_thumb_CMC_VL, right_thumb_MC, right_thumb_PP]
+        pad: {link: right_thumb_elastomer, offset: [-0.00524308, -0.02313782, -0.00347266]}
+      index:
+        alignment_link: right_index_MCP_VL
+        chain_points: [right_index_MCP_VL, right_index_PP, right_index_MP]
+        pad: {link: right_index_elastomer, offset: [0.00007963, -0.02111825, -0.00563184]}
+      middle:
+        alignment_link: right_middle_MCP_VL
+        chain_points: [right_middle_MCP_VL, right_middle_PP, right_middle_MP]
+        pad: {link: right_middle_elastomer, offset: [0.00007963, -0.02111825, -0.00563184]}
+      ring:
+        alignment_link: right_ring_MCP_VL
+        chain_points: [right_ring_MCP_VL, right_ring_PP, right_ring_MP]
+        pad: {link: right_ring_elastomer, offset: [0.00007963, -0.02111825, -0.00563184]}
+      little:
+        alignment_link: right_pinky_MCP_VL
+        chain_points: [right_pinky_MC, right_pinky_MCP_VL, right_pinky_PP]
+        pad: {link: right_pinky_elastomer, offset: [0.00007963, -0.02111825, -0.00563184]}

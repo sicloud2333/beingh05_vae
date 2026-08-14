@@ -1,0 +1,55 @@
+project_name: OrthoHand-Native-VAE
+run_name: native_n2_pair_vector_distance
+wandb_enabled: true
+wandb_group: native_urdf_vae
+wandb_tags: [native_urdf, shadow, gaia, sharpa, n2]
+
+device: cuda
+seed: 42
+deterministic: true
+output_root: runs
+
+model_config: configs/model.yaml
+hand_config: configs/right_hands.yaml
+train_data: data/train_50k_per_hand_seed42.pt
+val_data: data/val_5k_per_hand_seed10042.pt
+
+data_generation:
+  train_samples_per_hand: 50000
+  val_samples_per_hand: 5000
+  train_seed: 42
+  val_seed: 10042
+  fk_batch_size: 2048
+  limit_shrink_ratio: 0.95
+  device: cuda
+
+num_epochs: 800
+batch_size: 2048
+num_workers: 0
+pin_memory: true
+val_interval: 5
+save_interval: 50
+max_train_batches: 0
+max_val_batches: 0
+
+lr: 0.001
+weight_decay: 0.000001
+beta1: 0.9
+beta2: 0.999
+grad_clip_norm: 1.0
+lr_decay_factor: 0.5
+lr_patience: 10
+min_lr: 0.000001
+
+lambda_q: 1.0
+lambda_tip: 5.0
+lambda_cross_abs: 5.0
+lambda_cross_pair_vector: 1.0
+lambda_cross_pair_distance: 0.3
+cross_loss_start_epoch: 300
+beta_action: 0.0001
+beta_morphology: 0.00001
+finger_weights_cross_abs: [1.5, 1.2, 1.2, 0.8, 0.8]
+
+resume_path: null
+resume_optimizer: true

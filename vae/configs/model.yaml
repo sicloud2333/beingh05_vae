@@ -1,0 +1,14 @@
+format_version: 1
+x_dim: 60
+h_dim: 127
+q_dim: 22
+hidden_dim: 256
+action_latent_dim: 24
+morphology_latent_dim: 16
+encoder_layers: 4
+morphology_encoder_type: res_mlp
+decoder_type: universal
+decoder_trunk_layers: 4
+decoder_head_layers: 2
+query_dim: 22
+dropout: 0.0

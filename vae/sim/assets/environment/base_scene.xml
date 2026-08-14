@@ -1,0 +1,75 @@
+<mujoco model="grasp_base_scene">
+  <!--
+    Shared grasping environment.
+
+    Keep the table, lighting, camera and physics settings unchanged when
+    composing Shadow, Gaia and Sharpa scenes. Replace only the contents of
+    hand_mount and the object body/asset for a concrete collection scene.
+  -->
+  <compiler angle="radian" coordinate="local"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast">
+    <flag contact="enable" gravity="enable"/>
+  </option>
+
+  <statistic center="0 0 0.18" extent="0.75"/>
+
+  <visual>
+    <global azimuth="135" elevation="-25" offwidth="640" offheight="480"/>
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.35 0.35 0.35" specular="0.015 0.015 0.015"/>
+    <quality shadowsize="4096"/>
+  </visual>
+
+  <default>
+    <geom condim="4" friction="0.9 0.01 0.001" solref="0.01 1" solimp="0.95 0.99 0.001"/>
+  </default>
+
+  <asset>
+    <texture name="sky" type="skybox" builtin="gradient" rgb1="0.96 0.97 0.98" rgb2="0.82 0.86 0.90" width="512" height="3072"/>
+    <texture name="table_tex" type="2d" builtin="checker" rgb1="0.72 0.74 0.72" rgb2="0.62 0.65 0.63" width="512" height="512"/>
+    <material name="table_mat" texture="table_tex" texrepeat="4 4" texuniform="true" specular="0.08" shininess="0.15" reflectance="0.02"/>
+    <material name="object_placeholder_mat" rgba="0.48 0.63 0.74 1" specular="0.12" shininess="0.25"/>
+  </asset>
+
+  <worldbody>
+    <light name="scene_light" pos="1.0 1.0 1.5" dir="-0.2 -0.2 -1" specular="0.3 0.3 0.3" directional="true" castshadow="false"/>
+
+    <!-- Fixed egocentric workspace camera. Render at 640 x 480. -->
+    <camera name="ego" pos="0 -0.55 0.60" xyaxes="1 0 0 0 0.737154 0.675725" fovy="60"/>
+    <camera name="ego_opposite" pos="0 0.55 0.60" xyaxes="-1 0 0 0 -0.737154 0.9" fovy="60"/>
+
+    <!-- The table top is exactly z=0 in world coordinates. -->
+    <geom
+      name="table"
+      type="box"
+      pos="0 0 -0.025"
+      size="0.45 0.45 0.025"
+      material="table_mat"
+      priority="1"
+      condim="6"
+      friction="1.5 0.02 0.1"
+    />
+
+    <!--
+      Replace this empty body with the selected hand's wrist rig/body.
+      Cameras declared here are templates: compose_grasp_scene attaches
+      them to the generated hand's wrist_rz_link so they move with the hand.
+    -->
+    <body name="hand_mount" pos="0 0 0.40">
+      <site name="hand_mount_frame" type="sphere" size="0.006" rgba="0.25 0.55 0.85 0.65" group="4"/>
+      <!-- Under-wrist forward view; the hand stays near the upper image edge. -->
+      <camera
+        name="wrist"
+        pos="0 -0.075 -0.045"
+        xyaxes="-1 0 0 0 0.983870 -0.178885"
+        fovy="90"
+      />
+    </body>
+
+    <!-- Replace the placeholder geom with visual and collision object meshes. -->
+    <body name="object" pos="0 0 0.035">
+      <freejoint name="object_joint"/>
+      <inertial pos="0 0 0" mass="0.10" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="object_placeholder" type="box" size="0.035 0.035 0.035" material="object_placeholder_mat"/>
+    </body>
+  </worldbody>
+</mujoco>

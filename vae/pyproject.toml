@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orthohand-native-vae"
+version = "0.1.0"
+description = "Trainable Native-URDF gesture VAE for Shadow, Gaia, and Sharpa hands"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "mujoco>=3.1",
+  "PyYAML>=6.0",
+  "pytorch-kinematics==0.7.6",
+  "torch>=2.0",
+  "plotly>=5.18",
+]
+
+[project.optional-dependencies]
+train = ["wandb>=0.17"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["native_vae*", "sim*"]

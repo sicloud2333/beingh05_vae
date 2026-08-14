@@ -1,0 +1,7 @@
+# Optional path reference for local deployment. Runtime shell variables take precedence.
+beingh05_root: /path/to/Being-H05
+data_root: /path/to/data
+checkpoint_root: /path/to/ckpts
+libero_root: /path/to/data/libero
+robocasa_root: /path/to/data/robocasa
+real_root: /path/to/data/real

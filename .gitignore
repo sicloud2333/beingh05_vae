@@ -1,0 +1,34 @@
+# Local environments and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local model/data artifacts (download separately from Hugging Face)
+ckpts/
+data/
+outputs/
+results/
+tensorboard/
+*.safetensors
+*.pt
+*.pth
+*.bin
+*.parquet
+*.mp4
+*.npz
+*.npy
+*.jsonl
+
+# Logs, caches and editor files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+.vscode/
+.idea/
+.DS_Store

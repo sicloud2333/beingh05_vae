@@ -1,0 +1,24 @@
+shadow_grasp_posttrain:
+  dataset_names:
+    - "shadow_grasp_0725"
+  data_config_names:
+    - "shadow_grasp_wrist_rot6d_minmax_gesture_raw"
+  embodiment_tags:
+    - "new_embodiment"
+
+  sampling_strategy: "step"
+  video_backend: "torchvision_av"
+  vit_transform_args:
+    type: "beingh"
+    normalize_type: "imagenet"
+    use_color_jitter: true
+
+  frame_step_size:
+    - 1
+  num_used_episodes_per_task:
+    - -1
+  num_used_episodes_per_dataset:
+    - -1
+  num_used_frames_per_dataset:
+    - -1
+  weight: 1
