@@ -98,7 +98,30 @@ hf download zju/Being-H05-shadow-grasp-2cam-joints \
   --local-dir ckpts/Being-H05-shadow-grasp-2cam-joints
 ```
 
-Sharpa/Gaia 的可选数据和 baseline 请从对应的 Hugging Face 组织仓库下载。
+Sharpa/Gaia 数据集和 baseline：
+
+```bash
+hf download zju/sharpa_grasp_bottle22249179_geo_visual100_2cam \
+  --repo-type dataset \
+  --local-dir data/sharpa_grasp_bottle22249179_geo_visual100_2cam
+
+hf download zju/gaia_grasp_bottle22249179_geo_visual100_2cam \
+  --repo-type dataset \
+  --local-dir data/gaia_grasp_bottle22249179_geo_visual100_2cam
+
+hf download zju/Being-H05-sharpa-joint-baseline \
+  --local-dir ckpts/Being-H05-sharpa-joint-baseline
+
+hf download zju/Being-H05-gaia-joint-baseline \
+  --local-dir ckpts/Being-H05-gaia-joint-baseline
+```
+
+仓库链接：
+
+- [Sharpa dataset](https://huggingface.co/datasets/zju/sharpa_grasp_bottle22249179_geo_visual100_2cam)
+- [Gaia dataset](https://huggingface.co/datasets/zju/gaia_grasp_bottle22249179_geo_visual100_2cam)
+- [Sharpa baseline](https://huggingface.co/zju/Being-H05-sharpa-joint-baseline)
+- [Gaia baseline](https://huggingface.co/zju/Being-H05-gaia-joint-baseline)
 
 官方依赖模型：
 
