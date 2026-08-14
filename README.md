@@ -87,6 +87,37 @@ huggingface-cli download <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
   --local-dir data/shadow_grasp_bottle22249179_aug100_2cam
 ```
 
+主策略模型：
+
+```bash
+hf download <HF_NAMESPACE>/Being-H05-shadow-grasp-2cam-rot6d-zraw \
+  --local-dir ckpts/Being-H05-shadow-grasp-2cam-rot6d-zraw
+```
+
+Native VAE：
+
+```bash
+mkdir -p vae/checkpoints
+hf download <HF_NAMESPACE>/Being-H05-native-vae \
+  native_n2_epoch800_inference.pt \
+  --local-dir vae/checkpoints
+```
+
+physical-joint baseline：
+
+```bash
+hf download <HF_NAMESPACE>/Being-H05-shadow-grasp-2cam-joints \
+  --local-dir ckpts/Being-H05-shadow-grasp-2cam-joints
+```
+
+Sharpa/Gaia 的可选数据和 baseline 下载命令见 [`docs/huggingface.md`](docs/huggingface.md)。
+
+官方依赖模型：
+
+```bash
+hf download OpenGVLab/InternVL3_5-2B --local-dir ckpts/InternVL3_5-2B
+hf download Qwen/Qwen3-0.6B --local-dir ckpts/Qwen3-0.6B
+```
 
 ## 训练
 
