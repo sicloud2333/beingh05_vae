@@ -73,6 +73,27 @@ BEINGH_CKPT_ROOT=/path/to/ckpts
 BEINGH_ENV=/path/to/conda/env
 ```
 
+## 交付 artifact 清单
+
+主方法只需要上传以下内容：
+
+```text
+数据：data/shadow_grasp_0725_core_bottle_1071
+模型：...20260802_100014/0040000
+VAE ：vae/checkpoints/native_n2_epoch800_inference.pt
+```
+
+physical-joint baseline 另外上传：
+
+```text
+数据：data/shadow_grasp_bottle22249179_aug100_2cam
+模型：...20260805_141947/0030000
+```
+
+Sharpa/Gaia 单独训练 baseline 数据和模型只有在需要复现实验时才上传。
+完整路径、上传命令和不需要上传的历史实验清单见
+[`docs/huggingface.md`](docs/huggingface.md)。
+
 ## 下载模型和数据
 
 将 `<HF_ORG>` 替换成实际的 Hugging Face organization。
