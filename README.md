@@ -238,3 +238,6 @@ PYTHONPATH="$PWD" python scripts/smoke_test_beingh05.py \
 - [Data configuration](docs/data_configuration.md)
 - [Unified action space](docs/unified_action_space.md)
 - [Release layout](docs/release.md)
+- [Native VAE 总览、训练与推理](vae/README.md)
+- [Native VAE 验证说明](vae/VALIDATION.md)
+- [VAE 仿真与评估](vae/evaluation/README.md)
