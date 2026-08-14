@@ -1,182 +1,260 @@
-# Being-H0.5: Scaling Human-Centric Robot Learning for Cross-Embodiment Generalization
+# Being-H05 Shadow Grasp
 
-<p align="center">
-    <img src="assets/being-h05.png" width="300"/>
-<p>
+这是 Being-H05 Shadow grasp 项目的交付仓库，包含：
 
-<div align="center">
+- Being-H05 模型、训练和推理代码；
+- Shadow grasp 数据配置和归一化配置；
+- Native VAE 跨手 retargeting 实现；
+- Shadow physical-joint baseline；
+- geometry retargeting baseline；
+- Shadow、Sharpa、Gaia 的 MuJoCo evaluation 入口。
 
-[![Blog](https://img.shields.io/badge/Blog-Being--H05-green)](https://research.beingbeyond.com/being-h05)
-[![Paper](https://img.shields.io/badge/arXiv-Paper-b31b1b.svg)](https://arxiv.org/pdf/2601.12993)
-[![Models](https://img.shields.io/badge/🤗%20Hugging%20Face-Models-yellow)](https://huggingface.co/collections/BeingBeyond/being-h05)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
+数据集、checkpoint、训练输出、视频和实验日志不上传 GitHub，统一从
+Hugging Face 单独下载。
 
-</div>
+## 目录结构
 
-Being-H0.5 is BeingBeyond's flagship **VLA** model, scaling human-centric learning with a unified action space to enable robust cross-embodiment robot control.
-This directory contains the released H0.5 codebase inside the unified `Being-H` repository layout.
+```text
+BeingH/                 Being-H05 模型、数据、训练和推理代码
+configs/                数据配置和 post-training 配置
+scripts/train/          训练入口
+scripts/eval/           open-loop 和 MuJoCo evaluation 入口
+docs/                   训练、推理、评估和发布说明
+vae/                    Native VAE、仿真资产和 geometry baseline
+assets/                 仓库级资源
+```
 
-<div align="center">
-<video src="https://github.com/user-attachments/assets/36714389-e737-4b11-8dcf-9076cc9f1d69" controls>
-</video>
-</div>
+`vae/` 在本交付版本中保留为源码快照，以保证跨手评估代码与当前版本一致。
+它不包含 VAE checkpoint、数据集或训练输出。
 
-## Model Checkpoints
+## 重要默认行为
 
-Download models from Hugging Face [Model Collections](https://huggingface.co/collections/BeingBeyond/being-h05):
+新的 MuJoCo evaluation 默认使用：
 
-| Model Type | Model Name | Parameters | Description |
-|------------|------------|------------|-------------|
-| **VLA Pretrained** | [Being-H05-2B](https://huggingface.co/BeingBeyond/Being-H05-2B) | 2B | Base vision-language-action model (preview) |
-| **VLA Specialist** | [Being-H05-2B_libero](https://huggingface.co/BeingBeyond/Being-H05-2B_libero) | 2B | Post-trained on LIBERO benchmark |
-| **VLA Specialist** | [Being-H05-2B_robocasa](https://huggingface.co/BeingBeyond/Being-H05-2B_robocasa) | 2B | Post-trained on RoboCasa kitchen tasks |
-| **VLA Generalist** | [Being-H05-2B_libero_robocasa](https://huggingface.co/BeingBeyond/Being-H05-2B_libero_robocasa) | 2B | Post-trained on both LIBERO and RoboCasa |
+```text
+latent-observation-mode = commanded
+inference-mode          = sync
+action-selection        = chunk
+```
 
-Note: the vision part is 224px by default.
-
-## Quick Start
-
-### Installation
+如需复现 encoded feedback，必须显式添加：
 
 ```bash
-git clone https://github.com/BeingBeyond/Being-H.git
-cd Being-H/Being-H05
-conda create -n beingh python=3.10
-conda activate beingh
+--latent-observation-mode encoded
+```
+
+## 安装
+
+```bash
+git clone <BEING_H05_GITHUB_URL> Being-H05
+cd Being-H05
+
+conda create -n beingh05 python=3.10 -y
+conda activate beingh05
 pip install -r requirements.txt
-pip install flash-attn --no-build-isolation
+pip install -r vae/requirements.txt
 ```
 
-### Training
+GPU 环境需要安装与 CUDA 驱动匹配的 PyTorch，并根据环境安装兼容版本的
+`flash-attn`。
+
+配置本地路径：
 
 ```bash
-# Single-embodiment training (e.g., LIBERO)
-bash scripts/train_libero_example.sh
-
-# Cross-embodiment training (multiple robots)
-bash scripts/train_cross_emb_example.sh
+cp .env.example .env
 ```
 
-**Important for cross-embodiment training:** Enable `--save_merged_metadata True` to save hierarchical metadata for inference. See [docs/training.md](docs/training.md) for details.
+至少需要设置：
 
-### Inference
-
-```python
-from BeingH.inference.beingh_policy import BeingHPolicy
-
-# Load a pre-trained policy
-policy = BeingHPolicy(
-    model_path="<path-to-checkpoint>",      # Path to Being-H checkpoint
-    data_config_name="<config-name>",       # e.g., "libero_nonorm", "robocasa_human"
-    dataset_name="<dataset-name>",          # For loading normalization stats
-    embodiment_tag="<robot-tag>",           # Robot identifier
-    instruction_template="<prompt>",        # Task instruction template
-)
-
-# Run inference
-actions = policy.get_action(observations)
+```bash
+BEINGH05_ROOT=/path/to/Being-H05
+BEINGH_DATA_ROOT=/path/to/data
+BEINGH_CKPT_ROOT=/path/to/ckpts
+BEINGH_ENV=/path/to/conda/env
 ```
 
-See [docs/inference.md](docs/inference.md) for the complete API reference.
+## 下载模型和数据
 
-## Supported Robots
+将 `<HF_ORG>` 替换成实际的 Hugging Face organization。
 
-Being-H currently provides example configurations for **LIBERO** and **RoboCasa** benchmarks. We will gradually release more pre-built configurations for additional robot platforms.
+```bash
+huggingface-cli download <HF_ORG>/Being-H05-2B \
+  --local-dir ckpts/Being-H05-2B
 
-To add your own robot, refer to our example configurations and the [Unified Action Space](docs/unified_action_space.md) slot layout, then follow the guide in [Data Configuration](docs/data_configuration.md).
-
-Don't see your robot? [Open an issue](https://github.com/BeingBeyond/Being-H/issues) with your robot specs and a data sample - we're happy to help add support.
-
-## How It Works: Unified Action Space
-
-Being-H uses a **200-dimensional unified action space** that maps different robots to a shared semantic representation. This is what enables cross-embodiment transfer.
-
-**The key insight**: Similar robot components (e.g., end-effector position) always map to the same dimensions, regardless of the robot type. This allows knowledge to transfer between robots.
-
-For most users, you don't need to understand the details - just use one of the pre-built configurations. For advanced users who want to add custom robots, see the complete documentation:
-
-**[Unified Action Space Guide](docs/unified_action_space.md)** - Complete slot layout and configuration examples
-
-## Cross-Embodiment Metadata
-
-For cross-embodiment models, Being-H saves **metadata** during training that is essential for inference. This metadata contains normalization statistics for each task/embodiment.
-
-When running inference on a cross-embodiment model, specify which metadata variant to use:
-
-```python
-policy = BeingHPolicy(
-    model_path="<path-to-checkpoint>",
-    dataset_name="uni_posttrain",              # Cross-embodiment dataset
-    metadata_variant="<task-or-embodiment>",   # Select normalization stats
-    stats_selection_mode="task",               # "task", "embodiment", or "auto"
-    # ... other parameters
-)
+huggingface-cli download <HF_ORG>/shadow_grasp_bottle22249179_aug100_2cam \
+  --repo-type dataset \
+  --local-dir data/shadow_grasp_bottle22249179_aug100_2cam
 ```
 
-See [docs/inference.md](docs/inference.md#cross-embodiment-metadata) for details.
+其他 baseline 数据集：
 
-## Documentation
+```bash
+huggingface-cli download <HF_ORG>/shadow_grasp_0725_core_bottle_1071 \
+  --repo-type dataset \
+  --local-dir data/shadow_grasp_0725_core_bottle_1071
 
-| Document | Description |
-|----------|-------------|
-| [Unified Action Space](docs/unified_action_space.md) | How cross-embodiment transfer works |
-| [Data Configuration](docs/data_configuration.md) | Adding custom robots and datasets |
-| [Training](docs/training.md) | Training parameters and scripts |
-| [Inference](docs/inference.md) | BeingHPolicy API reference |
-| [Evaluation](docs/evaluation.md) | LIBERO and RoboCasa benchmarks |
+huggingface-cli download <HF_ORG>/sharpa_grasp_bottle22249179_geo_visual100_2cam \
+  --repo-type dataset \
+  --local-dir data/sharpa_grasp_bottle22249179_geo_visual100_2cam
 
-## TODO
+huggingface-cli download <HF_ORG>/gaia_grasp_bottle22249179_geo_visual100_2cam \
+  --repo-type dataset \
+  --local-dir data/gaia_grasp_bottle22249179_geo_visual100_2cam
+```
 
-The following features are planned for future implementation:
+模型目录应包含 `config.json`、tokenizer 文件和模型权重；LeRobot 数据集应包含
+`meta/`、`data/`，以及需要的视频 `videos/`。
 
-- [ ] Out-of-the-box real robot pretrained checkpoints
-- [ ] Complete pretraining scripts and documentation
-- [x] Complete post-training scripts for all benchmarks
-- [x] Detailed training and data documentation
-- [x] Benchmark evaluation scripts for all supported tasks
+## 训练
 
-## Contributing and Building on Being-H
+Shadow grasp 的标准训练入口：
 
-We encourage researchers and practitioners to leverage Being-H as a foundation for their own experiments and applications. Whether you're adapting Being-H to new robotic platforms, exploring novel manipulation tasks, or extending the model to new domains, our modular codebase is designed to support your innovations. We welcome contributions of all kinds - from bug fixes and documentation improvements to new features and model architectures. By building on Being-H together, we can advance the field of vision-language-action modeling and enable robots to perform more complex and diverse manipulation tasks. Join us in making robotic manipulation more capable, robust, and accessible to all.
+```bash
+CUDA_VISIBLE_DEVICES=1,2 \
+NUM_GPUS=2 \
+BEINGH_ENV=/path/to/conda/env \
+EMBODIMENT_DATASET=shadow_grasp_bottle22249179_aug100_2cam \
+NORMALIZATION=wrist_rot6d_minmax_zraw \
+bash scripts/train/train_shadow_grasp.sh
+```
 
-## Acknowledgments
+常用归一化配置：
 
-Being-H builds on the following excellent open-source projects:
+```text
+q99
+minmax
+wrist_minmax_zraw
+wrist_euler_minmax_zraw
+wrist_rot6d_minmax_zraw
+wrist_rot6d_minmax_joints
+```
 
-- [InternVL](https://github.com/OpenGVLab/InternVL): Vision-Language model backbone
-- [Bagel](https://github.com/ByteDance-Seed/Bagel): Training framework
-- [Qwen](https://github.com/QwenLM/Qwen): Language model and MoE expert
-- [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO): Benchmark for lifelong robot learning
-- [RoboCasa](https://github.com/robocasa/robocasa): Large-scale simulation benchmark for everyday tasks
+预检但不启动训练：
 
-We thank the authors for their contributions to the robotics and machine learning communities.
+```bash
+PREFLIGHT_ONLY=True \
+BEINGH_ENV=/path/to/conda/env \
+bash scripts/train/train_shadow_grasp.sh
+```
+
+短 smoke test：
+
+```bash
+SMOKE_TEST=True \
+BEINGH_ENV=/path/to/conda/env \
+bash scripts/train/train_shadow_grasp.sh
+```
+
+## Offline open-loop inference
+
+```bash
+bash scripts/eval/eval_shadow_open_loop.sh \
+  --model-path outputs/<training-run>/0020000 \
+  --dataset-path data/shadow_grasp_bottle22249179_aug100_2cam \
+  --episode-index 0
+```
+
+多个 episode 会复用同一个已加载模型：
+
+```bash
+bash scripts/eval/eval_shadow_open_loop.sh \
+  --model-path outputs/<training-run>/0040000 \
+  --dataset-path data/shadow_grasp_bottle22249179_aug100_2cam \
+  --episode-indices 0 1 2 3
+```
+
+## MuJoCo evaluation
+
+```bash
+bash scripts/eval/eval_shadow_grasp.sh \
+  --model-path outputs/<training-run>/0040000 \
+  --dataset vae/evaluation/object_episodes/<manifest>.jsonl \
+  --episode-range 0 7 \
+  --hand shadow_hand_right \
+  --device cuda:0
+```
+
+Sharpa/Gaia zero-shot：
+
+```bash
+bash scripts/eval/eval_shadow_grasp.sh \
+  --model-path outputs/<training-run>/0040000 \
+  --dataset vae/evaluation/object_episodes/<manifest>.jsonl \
+  --episode-range 0 7 \
+  --hand sharpa_hand_right \
+  --device cuda:0
+```
+
+默认 profile 是 `safe_smooth`。如需原始动作：
+
+```bash
+bash scripts/eval/eval_shadow_grasp.sh \
+  ... \
+  --deployment-profile legacy \
+  --execution-mode raw \
+  --no-native-joint-rate-limit
+```
+
+## Geometry baseline
+
+Shadow physical-joint checkpoint 在 Sharpa/Gaia 上使用 geometry retargeting：
+
+```bash
+bash scripts/eval/eval_shadow_grasp.sh \
+  --model-path outputs/<joint-baseline-run>/0040000 \
+  --dataset vae/evaluation/object_episodes/<manifest>.jsonl \
+  --episode-range 0 7 \
+  --hand sharpa_hand_right \
+  --joint-retargeting geometry \
+  --geometry-action-chunk-mode batch \
+  --latent-observation-mode commanded \
+  --device cuda:0
+```
+
+推理速度 benchmark：
+
+```bash
+python vae/scripts/benchmark_beingh_retargeting.py --help
+```
+
+## 验证
+
+源码和入口检查（不需要下载数据）：
+
+```bash
+PYTHONPATH="$PWD" python scripts/smoke_test_beingh05.py
+```
+
+安装依赖并下载数据后：
+
+```bash
+PYTHONPATH="$PWD" python scripts/smoke_test_beingh05.py \
+  --import-config \
+  --require-local-data
+```
+
+## 可复现性
+
+每次实验请同时记录：
+
+```text
+Being-H05 Git commit
+VAE source commit
+Hugging Face model revision
+Hugging Face dataset revision
+```
+
+## 文档
+
+- [Training](docs/training.md)
+- [Inference](docs/inference.md)
+- [Evaluation](docs/evaluation.md)
+- [Data configuration](docs/data_configuration.md)
+- [Unified action space](docs/unified_action_space.md)
+- [Release layout](docs/release.md)
 
 ## License
 
 Copyright (c) 2026 BeingBeyond Ltd. and/or its affiliates.
 
 SPDX-License-Identifier: Apache-2.0
-
-## Citation
-
-If you find our work useful, please consider citing us and give a star to our repository! 🌟🌟🌟
-
-**Being-H0.5**
-
-```bibtex
-@article{beingbeyond2026beingh05,
-  title={Being-H0. 5: Scaling Human-Centric Robot Learning for Cross-Embodiment Generalization},
-  author={Luo, Hao and Wang, Ye and Zhang, Wanpeng and Zheng, Sipeng and Xi, Ziheng and Xu, Chaoyi and Xu, Haiweng and Yuan, Haoqi and Zhang, Chi and Wang, Yiqing and others},
-  journal={arXiv preprint arXiv:2601.12993},
-  year={2026}
-}
-```
-
-
-## Release artifacts
-
-This GitHub repository contains code and configuration only. Model checkpoints and
-datasets are downloaded separately from Hugging Face; see [`docs/release.md`](docs/release.md).
-Set paths through `.env` (copy from `.env.example`) instead of using machine-specific
-absolute paths. The canonical MuJoCo evaluator is
-`scripts/eval/eval_shadow_grasp.sh` and defaults to commanded latent observations.
