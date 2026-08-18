@@ -184,6 +184,8 @@ class SinusoidalPositionalEncoding(nn.Module):
     def __init__(self, embedding_dim):
         super().__init__()
         self.embedding_dim = embedding_dim
+        self.enable_frequency_cache = False
+        self._frequency_cache = {}
 
     def forward(self, timesteps):
         # timesteps: shape (B, T) or (N,) for packed 1D inputs
@@ -196,10 +198,20 @@ class SinusoidalPositionalEncoding(nn.Module):
         device = timesteps.device
 
         half_dim = self.embedding_dim // 2
-        exponent = -torch.arange(half_dim, dtype=torch.float, device=device) * (
-            torch.log(torch.tensor(10000.0)) / half_dim
+        cache_key = (str(device), half_dim)
+        frequency = (
+            self._frequency_cache.get(cache_key)
+            if self.enable_frequency_cache
+            else None
         )
-        freqs = timesteps.unsqueeze(-1) * exponent.exp()
+        if frequency is None:
+            exponent = -torch.arange(
+                half_dim, dtype=torch.float, device=device
+            ) * (torch.log(torch.tensor(10000.0)) / half_dim)
+            frequency = exponent.exp()
+            if self.enable_frequency_cache:
+                self._frequency_cache[cache_key] = frequency
+        freqs = timesteps.unsqueeze(-1) * frequency
 
         sin = torch.sin(freqs)
         cos = torch.cos(freqs)
@@ -421,6 +433,44 @@ class SlicedWassersteinDistance(nn.Module):
     def __init__(self, num_projections: int = 32):
         super().__init__()
         self.num_projections = num_projections
+        self.enable_vectorized_projections = False
+
+    def _forward_vectorized(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        generator,
+    ) -> torch.Tensor:
+        """Compute all fixed-count projections in one batched tensor program."""
+        feature_dim = x.shape[-1]
+        directions = torch.randn(
+            self.num_projections,
+            feature_dim,
+            device=x.device,
+            dtype=x.dtype,
+            generator=generator,
+        )
+        directions = directions / torch.norm(
+            directions, dim=1, keepdim=True
+        )
+
+        # Keep one row per projection.  Flattening batch and samples matches
+        # the original loop's per-projection reshape(-1) exactly.
+        x_projected = torch.matmul(x, directions.transpose(0, 1))
+        y_projected = torch.matmul(y, directions.transpose(0, 1))
+        x_projected = x_projected.permute(2, 0, 1).reshape(
+            self.num_projections, -1
+        )
+        y_projected = y_projected.permute(2, 0, 1).reshape(
+            self.num_projections, -1
+        )
+        x_sorted = torch.sort(x_projected, dim=1).values
+        y_sorted = torch.sort(y_projected, dim=1).values
+        common_length = min(x_sorted.shape[1], y_sorted.shape[1])
+        differences = (
+            x_sorted[:, :common_length] - y_sorted[:, :common_length]
+        )
+        return differences.square().mean(dim=1).mean()
 
     def forward(
         self,
@@ -449,6 +499,9 @@ class SlicedWassersteinDistance(nn.Module):
             generator = torch.Generator(device=device).manual_seed(seed)
         else:
             generator = None
+
+        if self.enable_vectorized_projections:
+            return self._forward_vectorized(x, y, generator)
 
         total_transport_cost = 0.0
 

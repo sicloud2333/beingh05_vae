@@ -23,6 +23,12 @@ from BeingH.model.beingvla import BeingH, BeingHConfig
 from BeingH.model.layers import InternVLConnector
 from BeingH.model.llm.qwen2 import Qwen2Tokenizer
 from BeingH.model.vit_model.internvit_navit import InternVisionConfig, InternVisionModel
+from BeingH.npu_single_sample_fast_path import (
+    VALID_NPU_SINGLE_SAMPLE_FAST_PATH_MODES,
+)
+from BeingH.npu_capture_replay import NPUCaptureProcessUnhealthyError
+from BeingH.npu_prefix_segment_route import build_prefix_segment_route
+from BeingH.fused_projection_storage import prepare_fused_projection_storage
 from BeingH.utils.schema import DatasetMetadata, EmbodimentTag
  
 # Register custom config
@@ -54,6 +60,39 @@ def load_safetensors(path):
                 state_dict[key] = f.get_tensor(key)
     print("Weights loaded from .safetensors files.")
     return state_dict
+
+
+def configure_npu_linear_weight_prelayout(enabled: bool) -> None:
+    """Configure the process-global torch-npu MatMul format policy for OPT-16."""
+    if not enabled:
+        return
+    import torch_npu
+
+    torch.npu.config.allow_internal_format = True
+    torch.npu.set_mm_bmm_format_nd(False)
+
+
+def prelayout_npu_linear_weights(model: torch.nn.Module) -> int:
+    """Convert unique 2-D ``nn.Linear`` weights to FRACTAL_NZ in place."""
+    import torch_npu
+
+    converted = 0
+    seen_parameters: set[int] = set()
+    target_format = int(torch_npu.Format.FRACTAL_NZ)
+    for module in model.modules():
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        weight = module.weight
+        if id(weight) in seen_parameters:
+            continue
+        seen_parameters.add(id(weight))
+        if weight.device.type != "npu" or weight.ndim != 2:
+            continue
+        if int(torch_npu.get_npu_format(weight)) == target_format:
+            continue
+        weight.data = torch_npu.npu_format_cast(weight.data, target_format)
+        converted += 1
+    return converted
 
 
 # Helper functions
@@ -154,6 +193,48 @@ class BeingHPolicy(BasePolicy):
         clip_normalized_action_keys: Optional[List[str]] = None,
         # RTC parameter
         enable_rtc: bool = True,
+        # Lossless inference optimization flags
+        enable_static_prefix_cache: bool = False,
+        enable_npu_fusion_attention: bool = False,
+        enable_cuda_gqa_attention: bool = False,
+        enable_npu_fusion_attention_bsnd: bool = False,
+        enable_npu_hybrid_attention_layout: bool = False,
+        enable_npu_prefix_segment_route: bool = False,
+        enable_npu_projection_fusion: bool = False,
+        enable_npu_vectorized_mpg: bool = False,
+        enable_npu_workspace_reuse: bool = False,
+        enable_npu_kv_workspace: bool = False,
+        enable_cuda_kv_workspace: bool = False,
+        enable_npu_add_rms_norm: bool = False,
+        enable_npu_fused_rotary: bool = False,
+        enable_npu_fused_swiglu: bool = False,
+        enable_cuda_fused_rotary: bool = False,
+        enable_cuda_fused_swiglu: bool = False,
+        enable_cuda_fused_only_projection_storage: bool = False,
+        enable_fused_only_projection_storage: bool = False,
+        enable_npu_static_tensor_cache: bool = False,
+        enable_npu_dtype_fast_path: bool = False,
+        enable_npu_euler_buffer_cache: bool = False,
+        enable_npu_vision_state_overlap: bool = False,
+        enable_npu_action_compile: bool = False,
+        enable_npu_vision_compile: bool = False,
+        enable_npu_linear_weight_prelayout: bool = False,
+        enable_npu_persistent_compile_cache: bool = False,
+        npu_compile_cache_dir: Optional[str] = None,
+        enable_adaptive_flow_steps: bool = False,
+        adaptive_flow_min_steps: int = 2,
+        adaptive_flow_velocity_threshold: float = 0.0,
+        enable_adaptive_mpg_refinement: bool = False,
+        adaptive_mpg_gate_threshold: float = 0.0,
+        enable_policy_prompt_cache: bool = False,
+        npu_single_sample_fast_path: str = "off",
+        enable_npu_capture_replay: bool = False,
+        enable_npu_prefix_graph_replay: bool = False,
+        npu_graph_cache_max_entries: int = 1,
+        enable_cuda_capture_replay: bool = False,
+        cuda_graph_cache_max_entries: Optional[int] = None,
+        enable_npu_baseline_flow_graph_replay: bool = False,
+        enable_npu_adaptive_flow_graph_replay: bool = False,
         # Metadata variant selection
         metadata_variant: str = None,
         stats_selection_mode: str = "auto",
@@ -184,10 +265,83 @@ class BeingHPolicy(BasePolicy):
                 before inverse normalization. Disabled by default so existing
                 inference behavior is unchanged.
             enable_rtc: Enable Real-Time Chunking
+            enable_static_prefix_cache: Enable the OPT-01 request-local causal
+                prefix cache. The original forward path remains the default.
+            enable_npu_fusion_attention: Enable OPT-02 NPU fused attention
+            enable_cuda_gqa_attention: Use CUDA SDPA native GQA without
+                materializing repeated K/V heads.
+            enable_npu_fusion_attention_bsnd: Use the experimental BSND input
+                layout for OPT-02 to avoid internal layout conversion.
+                with native GQA. The original SDPA path remains the default.
+            enable_npu_prefix_segment_route: Enable the OPT-05 validated
+                segment route for the OPT-01 static prefix only.
+            enable_npu_projection_fusion: Enable the OPT-06 action QKV and
+                MLP gate/up projection fusion.
+            enable_npu_vectorized_mpg: Enable the OPT-07 fixed-count
+                vectorized MPG projection path.
+            enable_npu_workspace_reuse: Enable the OPT-08 static-suffix
+                clone/overwrite elimination path.
+            enable_npu_kv_workspace: Reuse graph-owned full KV buffers and
+                update only the dynamic suffix instead of concatenating the
+                static prefix on every graph replay.
+            enable_cuda_kv_workspace: CUDA alias for the same graph-owned KV
+                workspace contract.
+            enable_npu_add_rms_norm: Fuse the action-suffix attention residual
+                add and following RMSNorm with the native NPU operator.
+            enable_npu_fused_rotary: Fuse RoPE half-rotation, multiply and add
+                with the native NPU rotary kernel.
+            enable_cuda_fused_rotary: Fuse GPU RoPE with a CUDA/Triton kernel.
+            enable_cuda_fused_swiglu: Fuse GPU SwiGLU with a CUDA/Triton kernel.
+            enable_cuda_fused_only_projection_storage: Store Q/K/V and Gate/Up
+                as row views of their fused inference weights on CUDA.
+            enable_fused_only_projection_storage: Store Q/K/V and Gate/Up as
+                row views of one shared fused inference storage on any device.
+                This is inference-only and preserves the original state-dict
+                parameter names while avoiding a second fused-weight copy.
+            enable_npu_static_tensor_cache: Enable the OPT-10 bounded mask
+                and timestep tensor cache.
+            enable_npu_dtype_fast_path: Enable the OPT-09 no-op BF16 cast
+                elimination in the action attention suffix.
+            enable_npu_euler_buffer_cache: Enable the OPT-15 action timestep
+                frequency cache.
+            enable_npu_vision_state_overlap: Enable the OPT-14 NPU stream
+                overlap for vision and proprioception encoders.
+            enable_npu_action_compile: Enable the OPT-11 GE compilation of
+                the fixed-shape action encoder and decoder.
+            enable_npu_vision_compile: Enable the OPT-13 GE compilation of
+                the fixed-shape vision backbone and connector.
+            enable_npu_linear_weight_prelayout: Enable OPT-16 process-global
+                internal MatMul formats and pre-layout 2-D Linear weights.
+            enable_npu_persistent_compile_cache: Enable OPT-17 on-disk
+                TorchAir cache for fixed vision compilation across restarts.
+            npu_compile_cache_dir: Stable, process-owned OPT-17 cache path.
+            enable_policy_prompt_cache: Enable the OPT-12 bounded tokenizer
+                result cache for repeated task instructions.
+            npu_single_sample_fast_path: OPT-03 routing mode: off, auto, or
+                force. It remains off by default during validation.
+            enable_npu_capture_replay: Enable the fixed-shape OPT-04 NPU graph
+                path for the OPT-01 action suffix. It remains off by default.
+            enable_npu_prefix_graph_replay: Replay the fixed-shape OPT-01
+                Prefix prefill as one NPU graph. It remains off by default.
+            npu_graph_cache_max_entries: Maximum number of shape-specialized
+                OPT-04 graphs. One preserves the original fixed-shape route.
+            enable_cuda_capture_replay: Enable the CUDA Graph implementation
+                of the same bounded OPT-04 action-suffix contract.
+            cuda_graph_cache_max_entries: CUDA graph capacity. Defaults to the
+                NPU-compatible capacity when omitted.
+            enable_npu_baseline_flow_graph_replay: Capture the fixed four-step
+                baseline flow iteration as one graph. Default off.
+            enable_npu_adaptive_flow_graph_replay: Allow experimental
+                ADAPT-01 to reuse the OPT-04 single-forward graph for a
+                variable number of replays. It remains off by default.
             metadata_variant: Specific metadata variant to use
             stats_selection_mode: Auto-selection mode ('auto', 'task', 'embodiment')
         """
         self.device = torch.device(device)
+        if self.device.type == "npu":
+            configure_npu_linear_weight_prelayout(
+                enable_npu_linear_weight_prelayout
+            )
         self.model_path = model_path
         self.data_config_name = data_config_name
         self.prop_pos = prop_pos
@@ -202,6 +356,9 @@ class BeingHPolicy(BasePolicy):
         self.clip_normalized_action_keys = set(
             clip_normalized_action_keys or []
         )
+        self._npu_capture_unhealthy_reason: Optional[str] = None
+        self.enable_policy_prompt_cache = enable_policy_prompt_cache
+        self._prompt_token_cache = {}
 
         self.embodiment_tag = EmbodimentTag(embodiment_tag)
 
@@ -291,7 +448,221 @@ class BeingHPolicy(BasePolicy):
         state_dict = load_safetensors(self.model_path)
         self.model.load_state_dict(state_dict, strict=True)
         self.model.to(self.device, dtype=torch.bfloat16)
+        self.fused_projection_storage_report = None
+        self.cuda_fused_projection_storage_report = None
+        if (
+            enable_fused_only_projection_storage
+            or enable_cuda_fused_only_projection_storage
+        ):
+            self.fused_projection_storage_report = (
+                prepare_fused_projection_storage(self.model)
+            )
+            # Keep the legacy attribute for existing GPU reports and callers.
+            self.cuda_fused_projection_storage_report = (
+                self.fused_projection_storage_report
+            )
+        self.npu_linear_weight_prelayout_count = 0
+        if enable_npu_linear_weight_prelayout:
+            self.npu_linear_weight_prelayout_count = (
+                prelayout_npu_linear_weights(self.model)
+            )
         self.model.eval()
+        self.model.enable_static_prefix_cache = enable_static_prefix_cache
+        self.model.enable_npu_fusion_attention = enable_npu_fusion_attention
+        self.model.enable_cuda_gqa_attention = enable_cuda_gqa_attention
+        self.model.npu_fusion_attention_input_layout = (
+            "BSND" if enable_npu_fusion_attention_bsnd else "BNSD"
+        )
+        self.model.enable_npu_hybrid_attention_layout = (
+            enable_npu_hybrid_attention_layout
+        )
+        self.model.enable_npu_prefix_segment_route = (
+            enable_npu_prefix_segment_route
+        )
+        self.model.enable_npu_projection_fusion = (
+            enable_npu_projection_fusion
+        )
+        self.model.enable_npu_vectorized_mpg = enable_npu_vectorized_mpg
+        self.model.enable_npu_workspace_reuse = enable_npu_workspace_reuse
+        self.model.enable_npu_kv_workspace = (
+            enable_npu_kv_workspace or enable_cuda_kv_workspace
+        )
+        self.model.enable_npu_add_rms_norm = enable_npu_add_rms_norm
+        self.model.enable_npu_fused_rotary = enable_npu_fused_rotary
+        self.model.enable_npu_fused_swiglu = enable_npu_fused_swiglu
+        self.model.enable_cuda_fused_rotary = enable_cuda_fused_rotary
+        self.model.enable_cuda_fused_swiglu = enable_cuda_fused_swiglu
+        self.model.enable_cuda_fused_only_projection_storage = (
+            enable_cuda_fused_only_projection_storage
+        )
+        self.model.enable_npu_static_tensor_cache = (
+            enable_npu_static_tensor_cache
+        )
+        self.model.enable_npu_dtype_fast_path = enable_npu_dtype_fast_path
+        self.model.enable_npu_euler_buffer_cache = (
+            enable_npu_euler_buffer_cache
+        )
+        self.model.enable_npu_vision_state_overlap = (
+            enable_npu_vision_state_overlap
+        )
+        self.model.enable_npu_action_compile = enable_npu_action_compile
+        self.model.enable_npu_vision_compile = enable_npu_vision_compile
+        self.model.enable_npu_persistent_compile_cache = (
+            enable_npu_persistent_compile_cache
+        )
+        self.model.npu_compile_cache_dir = npu_compile_cache_dir
+        self.model.enable_adaptive_flow_steps = enable_adaptive_flow_steps
+        self.model.adaptive_flow_min_steps = adaptive_flow_min_steps
+        self.model.adaptive_flow_velocity_threshold = (
+            adaptive_flow_velocity_threshold
+        )
+        self.model.enable_adaptive_mpg_refinement = (
+            enable_adaptive_mpg_refinement
+        )
+        self.model.adaptive_mpg_gate_threshold = (
+            adaptive_mpg_gate_threshold
+        )
+        if (
+            npu_single_sample_fast_path
+            not in VALID_NPU_SINGLE_SAMPLE_FAST_PATH_MODES
+        ):
+            choices = ", ".join(VALID_NPU_SINGLE_SAMPLE_FAST_PATH_MODES)
+            raise ValueError(
+                "invalid NPU single-sample fast-path mode "
+                f"{npu_single_sample_fast_path!r}; expected one of: {choices}"
+            )
+        self.model.npu_single_sample_fast_path = npu_single_sample_fast_path
+        self.model.enable_npu_capture_replay = (
+            enable_npu_capture_replay or enable_cuda_capture_replay
+        )
+        self.model.enable_npu_prefix_graph_replay = (
+            enable_npu_prefix_graph_replay
+        )
+        graph_cache_max_entries = (
+            cuda_graph_cache_max_entries
+            if self.device.type == "cuda"
+            and cuda_graph_cache_max_entries is not None
+            else npu_graph_cache_max_entries
+        )
+        if graph_cache_max_entries < 1:
+            raise ValueError("graph_cache_max_entries must be positive")
+        self.model.npu_graph_cache_max_entries = graph_cache_max_entries
+        self.model.enable_npu_baseline_flow_graph_replay = (
+            enable_npu_baseline_flow_graph_replay
+        )
+        self.model.enable_npu_adaptive_flow_graph_replay = (
+            enable_npu_adaptive_flow_graph_replay
+        )
+        print(
+            "OPT-01 static prefix cache: "
+            f"{'enabled' if enable_static_prefix_cache else 'disabled'}"
+        )
+        print(
+            "OPT-02 NPU fusion attention: "
+            f"{'enabled' if enable_npu_fusion_attention else 'disabled'}"
+        )
+        print(
+            "NPU-FG-ATTN-BSND fusion-attention layout: "
+            f"{self.model.npu_fusion_attention_input_layout}"
+        )
+        print(
+            "OPT-05 NPU prefix segment route: "
+            f"{'enabled' if enable_npu_prefix_segment_route else 'disabled'}"
+        )
+        print(
+            "OPT-06 NPU projection fusion: "
+            f"{'enabled' if enable_npu_projection_fusion else 'disabled'}"
+        )
+        print(
+            "OPT-07 NPU vectorized MPG: "
+            f"{'enabled' if enable_npu_vectorized_mpg else 'disabled'}"
+        )
+        print(
+            "OPT-08 NPU workspace reuse: "
+            f"{'enabled' if enable_npu_workspace_reuse else 'disabled'}"
+        )
+        print(
+            "NPU-MEM-01 full KV workspace: "
+            f"{'enabled' if enable_npu_kv_workspace else 'disabled'}"
+        )
+        print(
+            "NPU-OP-06A add RMSNorm: "
+            f"{'enabled' if enable_npu_add_rms_norm else 'disabled'}"
+        )
+        print(
+            "NPU-FG-ROPE fused rotary: "
+            f"{'enabled' if enable_npu_fused_rotary else 'disabled'}"
+        )
+        print(
+            "OPT-10 NPU static tensor cache: "
+            f"{'enabled' if enable_npu_static_tensor_cache else 'disabled'}"
+        )
+        print(
+            "OPT-09 NPU dtype fast path: "
+            f"{'enabled' if enable_npu_dtype_fast_path else 'disabled'}"
+        )
+        print(
+            "OPT-15 NPU Euler buffer cache: "
+            f"{'enabled' if enable_npu_euler_buffer_cache else 'disabled'}"
+        )
+        print(
+            "OPT-14 NPU vision/state overlap: "
+            f"{'enabled' if enable_npu_vision_state_overlap else 'disabled'}"
+        )
+        print(
+            "OPT-11 NPU action compile: "
+            f"{'enabled' if enable_npu_action_compile else 'disabled'}"
+        )
+        print(
+            "OPT-13 NPU vision compile: "
+            f"{'enabled' if enable_npu_vision_compile else 'disabled'}"
+        )
+        print(
+            "OPT-16 NPU Linear weight pre-layout: "
+            f"{'enabled' if enable_npu_linear_weight_prelayout else 'disabled'}"
+            f" ({self.npu_linear_weight_prelayout_count} weights)"
+        )
+        print(
+            "OPT-17 NPU persistent compile cache: "
+            f"{'enabled' if enable_npu_persistent_compile_cache else 'disabled'}"
+            f" ({npu_compile_cache_dir or 'default path'})"
+        )
+        print(
+            "ADAPT-01 flow steps: "
+            f"{'enabled' if enable_adaptive_flow_steps else 'disabled'}"
+            f" (min={adaptive_flow_min_steps}, "
+            f"threshold={adaptive_flow_velocity_threshold})"
+        )
+        print(
+            "ADAPT-02 MPG refinement: "
+            f"{'enabled' if enable_adaptive_mpg_refinement else 'disabled'}"
+            f" (gate threshold={adaptive_mpg_gate_threshold})"
+        )
+        print(
+            "OPT-12 policy prompt cache: "
+            f"{'enabled' if enable_policy_prompt_cache else 'disabled'}"
+        )
+        print(
+            "OPT-03 NPU single-sample causal fast path: "
+            f"{npu_single_sample_fast_path}"
+        )
+        print(
+            "OPT-04 accelerator capture/replay: "
+            f"{'enabled' if self.model.enable_npu_capture_replay else 'disabled'}"
+            f" (shape cache entries={graph_cache_max_entries})"
+        )
+        print(
+            "OPT-04P NPU Prefix graph replay: "
+            f"{'enabled' if enable_npu_prefix_graph_replay else 'disabled'}"
+        )
+        print(
+            "NPU-FG baseline flow graph: "
+            f"{'enabled' if enable_npu_baseline_flow_graph_replay else 'disabled'}"
+        )
+        print(
+            "ADAPT-01 NPU graph replay: "
+            f"{'enabled' if enable_npu_adaptive_flow_graph_replay else 'disabled'}"
+        )
 
         # Set core parameters
         # IMPORTANT: Set action_chunk_length from model config (not hardcoded)
@@ -564,6 +935,13 @@ class BeingHPolicy(BasePolicy):
 
         print(f"✓ Metadata loaded for '{self.dataset_name}'")
 
+    def _raise_if_npu_capture_unhealthy(self) -> None:
+        if self._npu_capture_unhealthy_reason is not None:
+            raise NPUCaptureProcessUnhealthyError(
+                "NPU capture/replay process is unhealthy; restart the policy "
+                f"worker: {self._npu_capture_unhealthy_reason}"
+            )
+
     @torch.no_grad()
     def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -581,6 +959,8 @@ class BeingHPolicy(BasePolicy):
         Returns:
             Action dictionary with unnormalized actions
         """
+        self._raise_if_npu_capture_unhealthy()
+
         # ===== 1. Extract RTC Parameters (sent by client) =====
         prev_chunk = observations.pop('prev_chunk', None)
         inference_delay = observations.pop('inference_delay', 0)
@@ -627,7 +1007,11 @@ class BeingHPolicy(BasePolicy):
             packed_inputs['inference_delay'] = inference_delay
 
         # ===== 5. Generate Action Chunk =====
-        model_pred = self.model.get_action(**packed_inputs)
+        try:
+            model_pred = self.model.get_action(**packed_inputs)
+        except NPUCaptureProcessUnhealthyError as error:
+            self._npu_capture_unhealthy_reason = str(error)
+            raise
         action_pred = model_pred["action_pred"]
 
         # Reshape to 3D for processing, from (B * chunk_length, action_dim) to (1, chunk_length, action_dim)
@@ -695,6 +1079,35 @@ class BeingHPolicy(BasePolicy):
 
         return result
 
+    def _encode_prompt_parts(self, instruction: str):
+        cache_key = (
+            self.model.system_message,
+            self.instruction_template,
+            self.action_chunk_length,
+            instruction,
+        )
+        if self.enable_policy_prompt_cache:
+            cached = self._prompt_token_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        system_ids = tuple(
+            self.tokenizer.encode(f"system\n{self.model.system_message}")
+        )
+        user_ids = tuple(self.tokenizer.encode("user\n"))
+        assistant_ids = tuple(self.tokenizer.encode("assistant\n"))
+        formatted = self.instruction_template.format(
+            task_description=instruction,
+            k=self.action_chunk_length,
+        )
+        instruction_ids = tuple(self.tokenizer.encode(formatted))
+        result = (system_ids, user_ids, assistant_ids, instruction_ids)
+        if self.enable_policy_prompt_cache:
+            if len(self._prompt_token_cache) >= 256:
+                self._prompt_token_cache.clear()
+            self._prompt_token_cache[cache_key] = result
+        return result
+
     def _prepare_packed_inputs(self, processed_obs: Dict[str, Any], instructions: List[str]) -> Dict[str, Any]:
         """Prepare packed inputs for model."""
         first_state_key = next((k for k in processed_obs if k.startswith('state.')), None)
@@ -725,20 +1138,12 @@ class BeingHPolicy(BasePolicy):
             
         pixel_values = torch.stack([self.image_transform(img) for img in all_frames])
 
-        # Build prompt components
-        system_prompt = f"system\n{self.model.system_message}"
-        system_ids = self.tokenizer.encode(system_prompt)
-
-        user_prompt = "user\n"
-        user_ids = self.tokenizer.encode(user_prompt)
-        
-        assistant_prompt = "assistant\n"
-        assistant_ids = self.tokenizer.encode(assistant_prompt)
-
-        inst_formatted = self.instruction_template.format(
-            task_description=instructions[0], k=self.action_chunk_length
+        # Build prompt components.  OPT-12 caches immutable tokenizer results
+        # by the full template/instruction key; packed tensors remain
+        # request-local because images and state are dynamic.
+        system_ids, user_ids, assistant_ids, inst_ids = (
+            self._encode_prompt_parts(instructions[0])
         )
-        inst_ids = self.tokenizer.encode(inst_formatted)
         
         # CORE: Build packed sequence
         packed_text_ids, packed_text_indexes = [], []
@@ -750,7 +1155,12 @@ class BeingHPolicy(BasePolicy):
         curr_rope_id = 0
 
         # === Block 1: System Turn ===
-        block_ids = [self.bos_token_id] + system_ids + [self.eos_token_id, self.newline_token_id]
+        block_ids = [
+            self.bos_token_id,
+            *system_ids,
+            self.eos_token_id,
+            self.newline_token_id,
+        ]
         packed_text_ids.extend(block_ids)
         packed_text_indexes.extend(range(curr, curr + len(block_ids)))
         packed_position_ids.extend(range(curr_rope_id, curr_rope_id + len(block_ids)))
@@ -764,7 +1174,7 @@ class BeingHPolicy(BasePolicy):
 
         # User prompt
         # is_bos: True, is_eos: False
-        block_ids = [self.bos_token_id] + user_ids
+        block_ids = [self.bos_token_id, *user_ids]
         packed_text_ids.extend(block_ids)
         packed_text_indexes.extend(range(curr, curr + len(block_ids)))
         curr += len(block_ids)
@@ -796,7 +1206,7 @@ class BeingHPolicy(BasePolicy):
         
         # Instruction
         # is_bos: False, is_eos: True
-        block_ids = inst_ids + [self.eos_token_id, self.newline_token_id]
+        block_ids = [*inst_ids, self.eos_token_id, self.newline_token_id]
         packed_text_ids.extend(block_ids)
         packed_text_indexes.extend(range(curr, curr + len(block_ids)))
         curr += len(block_ids)
@@ -813,7 +1223,7 @@ class BeingHPolicy(BasePolicy):
 
         # Assistant prompt
         # is_bos: True, is_eos: False
-        block_ids = [self.bos_token_id] + assistant_ids
+        block_ids = [self.bos_token_id, *assistant_ids]
         packed_text_ids.extend(block_ids)
         packed_text_indexes.extend(range(curr, curr + len(block_ids)))
         curr += len(block_ids)
@@ -845,7 +1255,7 @@ class BeingHPolicy(BasePolicy):
             sample_lens.append(padding_len)
 
         # Assemble final dict
-        return {
+        packed_inputs = {
             "sequence_length": sequence_length,
             "packed_text_ids": torch.tensor(packed_text_ids, dtype=torch.long),
             "packed_text_indexes": torch.tensor(packed_text_indexes, dtype=torch.long),
@@ -860,6 +1270,40 @@ class BeingHPolicy(BasePolicy):
             "packed_state_indexes": torch.tensor(packed_state_indexes, dtype=torch.long),
             "embodiment_ids": torch.tensor([31], dtype=torch.long),
         }
+        if (
+            self.model.enable_npu_prefix_segment_route
+            and self.model.enable_static_prefix_cache
+        ):
+            prefix_segment_route = None
+            prefix_segment_route_fallback_reason = None
+            try:
+                if not packed_action_indexes:
+                    raise ValueError("action indexes are empty")
+                action_start = packed_action_indexes[0]
+                prefix_und_indexes = [
+                    index
+                    for index in packed_text_indexes + packed_vit_token_indexes
+                    if index < action_start
+                ]
+                prefix_gen_indexes = [
+                    index
+                    for index in packed_state_indexes
+                    if index < action_start
+                ]
+                prefix_segment_route = build_prefix_segment_route(
+                    und_global_indexes=prefix_und_indexes,
+                    gen_global_indexes=prefix_gen_indexes,
+                    prefix_length=action_start,
+                )
+            except ValueError as error:
+                prefix_segment_route_fallback_reason = (
+                    f"invalid_cpu_prefix_route:{error}"
+                )
+            packed_inputs["npu_prefix_segment_route"] = prefix_segment_route
+            packed_inputs["npu_prefix_segment_route_fallback_reason"] = (
+                prefix_segment_route_fallback_reason
+            )
+        return packed_inputs
 
     def _check_is_batched(self, obs: Dict[str, Any]) -> bool:
         first_val = next(iter(obs.values()))

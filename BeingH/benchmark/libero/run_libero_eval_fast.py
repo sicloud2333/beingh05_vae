@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import time
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
@@ -107,6 +108,8 @@ class GenerateConfig:
     env_img_res: int = 512                           # Resolution for environment images (not policy input resolution)
 
     video_dir: str = "results/rollouts"
+    result_json_path: Optional[str] = None
+    """Optional structured result path for reproducible A/B evaluation."""
 
     # task_ids_to_eval: Optional[List[int]] = field(default_factory=list)
     task_ids_to_eval: Optional[str] = None
@@ -208,6 +211,8 @@ def run_episode(
     libero_obses_to_policy_obs_dict = Obses_to_Policy_Obs_Dict[cfg.data_config_name]
 
     success = False
+    control_steps = 0
+    episode_started = time.perf_counter()
     # try:
     while t < max_steps + cfg.num_steps_wait:
         if t < cfg.num_steps_wait:
@@ -224,12 +229,20 @@ def run_episode(
         action[-1] = -2 * action[-1] + 1
 
         obs, reward, done, info = env.step(action)
+        control_steps += 1
         if done:
             success = True
             break
         t += 1
 
-    return success, replay_images
+    episode_wall_time_s = time.perf_counter() - episode_started
+    return {
+        "success": success,
+        "replay_images": replay_images,
+        "control_steps": control_steps,
+        "episode_wall_time_s": episode_wall_time_s,
+        "request_latencies_ms": list(policy.request_latencies_ms),
+    }
 
 # ##################################################################
 #  Parallel Execution Worker Function
@@ -278,13 +291,15 @@ def run_trial_worker(args):
         }
 
     # 3. Run single episode
-    success, replay_images = run_episode(
+    episode_result = run_episode(
         cfg,
         env,
         task_description,
         policy,
         initial_state,
     )
+    success = episode_result["success"]
+    replay_images = episode_result["replay_images"]
 
     if trial_idx < cfg.num_save_videos_per_task:
         # Call function to save video
@@ -300,9 +315,36 @@ def run_trial_worker(args):
     # 5. Return serializable (pickleable) result
     return {
         "task_id": task_id,
+        "trial_idx": trial_idx,
+        "seed": seed,
         "task_description": task_description,
         "success": success,
         "skipped": False,
+        "control_steps": episode_result["control_steps"],
+        "episode_wall_time_s": episode_result["episode_wall_time_s"],
+        "request_latencies_ms": episode_result["request_latencies_ms"],
+    }
+
+
+def _latency_summary(values):
+    """Return a JSON-serializable summary without changing evaluation behavior."""
+    if not values:
+        return {
+            "count": 0,
+            "mean_ms": None,
+            "p50_ms": None,
+            "p95_ms": None,
+            "min_ms": None,
+            "max_ms": None,
+        }
+    array = np.asarray(values, dtype=np.float64)
+    return {
+        "count": int(array.size),
+        "mean_ms": float(array.mean()),
+        "p50_ms": float(np.percentile(array, 50)),
+        "p95_ms": float(np.percentile(array, 95)),
+        "min_ms": float(array.min()),
+        "max_ms": float(array.max()),
     }
 
 
@@ -357,6 +399,7 @@ def eval_libero(cfg: GenerateConfig) -> float:
     task_results = defaultdict(lambda: {"successes": 0, "episodes": 0})
     total_successes = 0
     total_episodes = 0
+    episode_results = []
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=cfg.max_workers) as executor:
         # Use executor.map to distribute tasks, and tqdm to show progress
@@ -379,6 +422,7 @@ def eval_libero(cfg: GenerateConfig) -> float:
             if result["success"]:
                 total_successes += 1
                 task_results[task_id]["successes"] += 1
+            episode_results.append(result)
 
             if total_episodes % cfg.log_interval == 0:
                 current_success_rate = (total_successes / total_episodes) if total_episodes > 0 else 0
@@ -414,6 +458,78 @@ def eval_libero(cfg: GenerateConfig) -> float:
     log_message(f"Total episodes evaluated: {total_episodes}", log_file)
     log_message(f"Total successes: {total_successes}", log_file)
     log_message(f"Overall success rate: {final_success_rate:.4f} ({final_success_rate * 100:.1f}%)", log_file)
+
+    all_request_latencies_ms = [
+        latency
+        for result in episode_results
+        for latency in result["request_latencies_ms"]
+    ]
+    request_latency = _latency_summary(all_request_latencies_ms)
+    steady_request_latency = _latency_summary(all_request_latencies_ms[1:])
+    if request_latency["count"]:
+        log_message(
+            "Inference request latency: "
+            f"count={request_latency['count']}, "
+            f"mean={request_latency['mean_ms']:.3f} ms, "
+            f"p50={request_latency['p50_ms']:.3f} ms, "
+            f"p95={request_latency['p95_ms']:.3f} ms",
+            log_file,
+        )
+    else:
+        log_message("Inference request latency: count=0", log_file)
+    if steady_request_latency["count"]:
+        log_message(
+            "Steady inference request latency (first request excluded): "
+            f"count={steady_request_latency['count']}, "
+            f"mean={steady_request_latency['mean_ms']:.3f} ms, "
+            f"p50={steady_request_latency['p50_ms']:.3f} ms, "
+            f"p95={steady_request_latency['p95_ms']:.3f} ms",
+            log_file,
+        )
+
+    if cfg.result_json_path:
+        result_path = Path(cfg.result_json_path)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        structured_result = {
+            "protocol": {
+                "task_suite_name": str(cfg.task_suite_name),
+                "task_ids_to_eval": task_ids_to_run,
+                "num_trials_per_task": cfg.num_trials_per_task,
+                "num_open_loop_steps": cfg.num_open_loop_steps,
+                "env_img_res": cfg.env_img_res,
+                "seed": cfg.seed,
+                "action_type": cfg.action_type,
+                "data_config_name": cfg.data_config_name,
+            },
+            "summary": {
+                "total_episodes": total_episodes,
+                "total_successes": total_successes,
+                "success_rate": final_success_rate,
+                "request_latency": request_latency,
+                "cold_start_request_ms": (
+                    all_request_latencies_ms[0]
+                    if all_request_latencies_ms
+                    else None
+                ),
+                "steady_request_latency": steady_request_latency,
+                "mean_episode_wall_time_s": (
+                    float(
+                        np.mean(
+                            [
+                                result["episode_wall_time_s"]
+                                for result in episode_results
+                            ]
+                        )
+                    )
+                    if episode_results
+                    else None
+                ),
+            },
+            "episodes": episode_results,
+        }
+        with result_path.open("w", encoding="utf-8") as output:
+            json.dump(structured_result, output, indent=2)
+        log_message(f"Structured results saved to: {result_path}", log_file)
 
     if cfg.use_wandb:
         wandb.log({

@@ -5,6 +5,7 @@
 
 
 from typing import Any, Dict, Optional
+from BeingH.npu_capture_replay import NPUCaptureProcessUnhealthyError
 from .service import BaseInferenceClient, BaseInferenceServer
 
 
@@ -45,10 +46,54 @@ class BeingHInferenceServer(BaseInferenceServer):
         """
 
         super().__init__(host, port, api_token)
+        self.policy = policy
+        self._npu_capture_unhealthy_reason: Optional[str] = None
 
         # Register policy endpoints
-        self.register_endpoint("get_action", policy.get_action)
+        self.register_endpoint("get_action", self._get_action)
         self.register_endpoint("get_modality_config", policy.get_modality_config)
+        self.register_endpoint(
+            "get_inference_stats",
+            self._get_inference_stats,
+            requires_input=False,
+        )
+
+    def _get_inference_stats(self) -> Dict[str, Any]:
+        """Expose read-only graph health/counters for acceptance tests."""
+        model = getattr(self.policy, "model", None)
+        suffix_runner = getattr(
+            model, "_npu_action_suffix_graph_runner", None
+        )
+        baseline_runner = getattr(
+            model, "_npu_baseline_flow_graph_runner", None
+        )
+        return {
+            "capture_unhealthy_reason": self._npu_capture_unhealthy_reason,
+            "npu_graph_cache": (
+                suffix_runner.stats() if suffix_runner is not None else None
+            ),
+            "npu_baseline_flow_graph_cache": (
+                baseline_runner.stats()
+                if baseline_runner is not None
+                else None
+            ),
+        }
+
+    def _get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
+        """Fail the worker closed after capture/replay corrupts NPU state."""
+        if self._npu_capture_unhealthy_reason is not None:
+            raise NPUCaptureProcessUnhealthyError(
+                "NPU capture/replay process is unhealthy; restart the server "
+                f"worker: {self._npu_capture_unhealthy_reason}"
+            )
+        try:
+            return self.policy.get_action(observations)
+        except NPUCaptureProcessUnhealthyError as error:
+            self._npu_capture_unhealthy_reason = str(error)
+            # BaseInferenceServer serializes this explicit fatal error to the
+            # current client, then exits its request loop.
+            self.running = False
+            raise
 
 
 # ==============================================================================
@@ -112,3 +157,8 @@ class BeingHInferenceClient(BaseInferenceClient):
        
         print(f"📞 Calling 'get_action' on server {self.host}:{self.port}")
         return self.call_endpoint("get_action", observations)
+
+    def get_inference_stats(self) -> Dict[str, Any]:
+        return self.call_endpoint(
+            "get_inference_stats", requires_input=False
+        )

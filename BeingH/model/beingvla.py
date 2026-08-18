@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import os
 import torch
 import torch.utils.checkpoint
+from functools import wraps
 from typing import List, Optional, Tuple, Union
 from torch import nn
 from torch.distributions import Beta
@@ -12,6 +13,27 @@ from torch.nn.attention.flex_attention import create_block_mask, or_masks, and_m
 from transformers.modeling_utils import PreTrainedModel
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
+from BeingH.npu_single_sample_fast_path import (
+    real_sample_lens,
+    resolve_npu_single_sample_fast_path,
+)
+from BeingH.npu_capture_replay import (
+    CUDAActionSuffixGraphRunner,
+    NPUActionSuffixGraphRunner,
+    NPUFixedBaselineFlowModule,
+)
+from BeingH.npu_prefix_graph_replay import NPUStaticPrefixGraphRunner
+from BeingH.npu_capture_replay_route import resolve_npu_capture_replay_route
+from BeingH.npu_prefix_segment_route import (
+    PrefixSegmentRoute,
+    resolve_npu_prefix_segment_route,
+)
+from BeingH.adaptive_inference import (
+    euler_extrapolate_remaining,
+    relative_velocity_residual,
+    should_skip_mpg_refinement,
+    should_terminate_flow,
+)
 from BeingH.utils.conversation import get_conv_template
 from BeingH.utils.constants import LLM_MODEL_ARCH, VIT_MODEL_ARCH, CONNECTOR_ARCH
 from .vit_model.internvit_navit import has_flash_attn
@@ -19,6 +41,49 @@ from .layers import *
 
 
 logger = logging.get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# FINE-GRAINED PROFILING HOOK (instrumentation only -- BEGIN)
+#
+# `PROFILE_LOOP_HOOK` stays None in production.  A profiler (see
+# `profile_npu_pipeline.py`) may assign a callable
+# ``hook(loop_name, iterable) -> iterable`` to it in order to time the denoise
+# loop bodies and to label every nested stage call with its
+# (mpg_iteration, flow_step) position.  While the hook is None -- and also
+# whenever the installed hook decides not to instrument -- `profiled_loop`
+# returns the original iterable object unchanged, so control flow, iteration
+# order, RNG consumption and therefore numerics are bit-identical to the
+# uninstrumented model.
+# ---------------------------------------------------------------------------
+PROFILE_LOOP_HOOK = None
+
+
+def profiled_loop(loop_name, iterable):
+    """Return `iterable` unchanged unless a profiler installed a loop hook."""
+    hook = PROFILE_LOOP_HOOK
+    if hook is None:
+        return iterable
+    return hook(loop_name, iterable)
+
+
+# FINE-GRAINED PROFILING HOOK (instrumentation only -- END)
+
+
+def _close_npu_capture_session_after_call(function):
+    """Guarantee request-lock release even when inference raises mid-flow."""
+    @wraps(function)
+    def wrapped(model, *args, **kwargs):
+        try:
+            return function(model, *args, **kwargs)
+        finally:
+            runner = getattr(
+                model, "_npu_action_suffix_graph_runner", None
+            )
+            if runner is not None:
+                runner.close_active_request()
+
+    return wrapped
 
 
 def create_sparse_mask(document_lens, split_lens, attn_modes, device):
@@ -325,6 +390,57 @@ class BeingH(PreTrainedModel):
             self.system_message = self.conv_template.system_message
         self.num_samples = 0
         self.optimize_rate = 0.0
+        # Lossless NPU inference optimizations remain independently opt-in.
+        self.enable_static_prefix_cache = False
+        self.enable_npu_fusion_attention = False
+        self.enable_cuda_gqa_attention = False
+        self.npu_fusion_attention_input_layout = "BNSD"
+        self.enable_npu_hybrid_attention_layout = False
+        self.enable_npu_prefix_segment_route = False
+        self.enable_npu_projection_fusion = False
+        self.enable_npu_vectorized_mpg = False
+        self.enable_npu_workspace_reuse = False
+        self.enable_npu_kv_workspace = False
+        self.enable_npu_add_rms_norm = False
+        self.enable_npu_fused_rotary = False
+        self.enable_npu_fused_swiglu = False
+        self.enable_cuda_fused_rotary = False
+        self.enable_cuda_fused_swiglu = False
+        self.enable_cuda_fused_only_projection_storage = False
+        self.enable_npu_static_tensor_cache = False
+        self.enable_npu_dtype_fast_path = False
+        self.enable_npu_euler_buffer_cache = False
+        self.enable_npu_vision_state_overlap = False
+        self.enable_npu_action_compile = False
+        self.enable_npu_vision_compile = False
+        self.enable_npu_persistent_compile_cache = False
+        self.npu_compile_cache_dir = None
+        self._npu_proprio_stream = None
+        self._npu_compiled_action_modules = {}
+        self._npu_compiled_vision = None
+        self._npu_static_mask_cache = {}
+        self._npu_timestep_tensor_cache = {}
+        self.npu_prefix_segment_route_last_reason = "disabled"
+        self.npu_single_sample_fast_path = "off"
+        self.enable_npu_capture_replay = False
+        self.enable_npu_prefix_graph_replay = False
+        self.npu_graph_cache_max_entries = 1
+        self.enable_npu_baseline_flow_graph_replay = False
+        self.enable_npu_adaptive_flow_graph_replay = False
+        self._npu_action_suffix_graph_runner = None
+        self._npu_prefix_graph_runner = None
+        self._npu_baseline_flow_graph_runner = None
+        object.__setattr__(self, "_npu_baseline_flow_graph_module", None)
+        self.enable_adaptive_flow_steps = False
+        self.adaptive_flow_min_steps = 2
+        self.adaptive_flow_velocity_threshold = 0.0
+        self.enable_adaptive_mpg_refinement = False
+        self.adaptive_mpg_gate_threshold = 0.0
+        self.last_adaptive_flow_steps = []
+        self.last_adaptive_flow_residuals = []
+        self.last_adaptive_flow_residual_traces = []
+        self.last_adaptive_mpg_gate = None
+        self.last_adaptive_mpg_skipped = False
 
         self._init_weights()
 
@@ -343,6 +459,146 @@ class BeingH(PreTrainedModel):
         wrist_end = min(self.wrist_action_dim, loss_mask.shape[-1])
         dimension_weights[:wrist_end] = self.wrist_action_loss_weight
         return loss_mask * dimension_weights
+
+    def clear_npu_capture_replay_cache(self):
+        """Release OPT-04 graph state before model/device lifecycle changes."""
+        runner = getattr(self, "_npu_action_suffix_graph_runner", None)
+        if runner is not None:
+            runner.clear()
+            self._npu_action_suffix_graph_runner = None
+        runner = getattr(self, "_npu_prefix_graph_runner", None)
+        if runner is not None:
+            runner.clear()
+            self._npu_prefix_graph_runner = None
+        runner = getattr(self, "_npu_baseline_flow_graph_runner", None)
+        if runner is not None:
+            runner.clear()
+            self._npu_baseline_flow_graph_runner = None
+        object.__setattr__(self, "_npu_baseline_flow_graph_module", None)
+
+    def freeze_npu_capture_replay_cache(self):
+        """Prohibit new graph capture after startup shape prewarming."""
+        self._get_npu_action_suffix_graph_runner().freeze()
+        if self._npu_prefix_graph_runner is not None:
+            self._npu_prefix_graph_runner.freeze()
+        if self._npu_baseline_flow_graph_runner is not None:
+            self._npu_baseline_flow_graph_runner.freeze()
+
+    def unfreeze_npu_capture_replay_cache(self):
+        """Allow graph capture during a controlled startup warmup phase."""
+        self._get_npu_action_suffix_graph_runner().unfreeze()
+        if self._npu_prefix_graph_runner is not None:
+            self._npu_prefix_graph_runner.unfreeze()
+        if self._npu_baseline_flow_graph_runner is not None:
+            self._npu_baseline_flow_graph_runner.unfreeze()
+
+    def _get_npu_action_suffix_graph_runner(self):
+        runner = self._npu_action_suffix_graph_runner
+        max_entries = self.npu_graph_cache_max_entries
+        device_type = next(self.language_model.parameters()).device.type
+        runner_type = (
+            CUDAActionSuffixGraphRunner
+            if device_type == "cuda"
+            else NPUActionSuffixGraphRunner
+        )
+        if runner is not None and (
+            type(runner) is not runner_type
+            or
+            runner.max_entries != max_entries
+            or runner.enable_kv_workspace != self.enable_npu_kv_workspace
+        ):
+            runner.clear()
+            runner = None
+        if runner is None:
+            runner = runner_type(
+                self.language_model,
+                max_entries=max_entries,
+                enable_kv_workspace=self.enable_npu_kv_workspace,
+            )
+            self._npu_action_suffix_graph_runner = runner
+        return runner
+
+    def _get_npu_prefix_graph_runner(self):
+        runner = self._npu_prefix_graph_runner
+        if runner is not None and runner.max_entries != self.npu_graph_cache_max_entries:
+            runner.clear()
+            runner = None
+        if runner is None:
+            device_type = next(self.language_model.parameters()).device.type
+            if device_type != "npu":
+                raise RuntimeError("NPU Prefix graph replay requires an NPU model")
+            runner = NPUStaticPrefixGraphRunner(
+                self.language_model,
+                max_entries=self.npu_graph_cache_max_entries,
+            )
+            self._npu_prefix_graph_runner = runner
+        return runner
+
+    def _get_npu_baseline_flow_graph_runner(self):
+        runner = self._npu_baseline_flow_graph_runner
+        max_entries = self.npu_graph_cache_max_entries
+        device_type = next(self.language_model.parameters()).device.type
+        runner_type = (
+            CUDAActionSuffixGraphRunner
+            if device_type == "cuda"
+            else NPUActionSuffixGraphRunner
+        )
+        if runner is not None and (
+            type(runner) is not runner_type
+            or runner.max_entries != max_entries
+        ):
+            runner.clear()
+            runner = None
+        if runner is None:
+            module = NPUFixedBaselineFlowModule(
+                action_encoder=self.action_encoder,
+                language_model=self.language_model,
+                action_decoder=self.action_decoder,
+                action_chunk_length=self.action_chunk_length,
+                num_steps=self.num_inference_timesteps,
+                num_timestep_buckets=self.num_timestep_buckets,
+            )
+            module.train(self.training)
+            runner = runner_type(
+                module,
+                max_entries=max_entries,
+            )
+            # Keep the execution wrapper alive without registering duplicate
+            # references to the model's existing submodules/state_dict.
+            object.__setattr__(
+                self, "_npu_baseline_flow_graph_module", module
+            )
+            self._npu_baseline_flow_graph_runner = runner
+        return runner
+
+    def _run_action_module(
+        self,
+        cache_key: str,
+        module: nn.Module,
+        *args,
+    ):
+        """Run an action-side module through OPT-11's static NPU compiler."""
+        if (
+            not self.enable_npu_action_compile
+            or not args
+            or not isinstance(args[0], torch.Tensor)
+            or args[0].device.type != "npu"
+        ):
+            return module(*args)
+        compiled = self._npu_compiled_action_modules.get(cache_key)
+        if compiled is None:
+            compiled = torch.compile(
+                module,
+                backend="npu",
+                fullgraph=True,
+                dynamic=False,
+            )
+            self._npu_compiled_action_modules[cache_key] = compiled
+        return compiled(*args)
+
+    def _apply(self, fn, recurse=True):
+        self.clear_npu_capture_replay_cache()
+        return super()._apply(fn, recurse=recurse)
 
     def _init_weights(self):
         for name, k in self.named_parameters():
@@ -761,6 +1017,7 @@ class BeingH(PreTrainedModel):
         )
 
     @torch.no_grad()
+    @_close_npu_capture_session_after_call
     def get_action(
         self,
         sequence_length: int,
@@ -781,19 +1038,82 @@ class BeingH(PreTrainedModel):
         inference_delay: int = 0,  # Number of prefix actions for RTC
         **kwargs
     ):
+        runner = getattr(self, "_npu_action_suffix_graph_runner", None)
+        if runner is not None:
+            runner.raise_if_unhealthy()
+        runner = getattr(self, "_npu_prefix_graph_runner", None)
+        if runner is not None:
+            runner.raise_if_unhealthy()
         self.eval()
         device = packed_text_ids.device
+        self.language_model.model.set_npu_fusion_attention(
+            self.enable_npu_fusion_attention,
+            self.npu_fusion_attention_input_layout,
+            self.enable_npu_hybrid_attention_layout,
+        )
+        self.language_model.model.set_cuda_gqa_attention(
+            self.enable_cuda_gqa_attention
+        )
+        self.language_model.model.set_npu_projection_fusion(
+            self.enable_npu_projection_fusion
+        )
+        self.language_model.model.set_npu_dtype_fast_path(
+            self.enable_npu_dtype_fast_path
+        )
+        self.language_model.model.set_npu_add_rms_norm(
+            self.enable_npu_add_rms_norm
+        )
+        self.language_model.model.set_npu_fused_rotary(
+            self.enable_npu_fused_rotary
+        )
+        self.language_model.model.set_npu_fused_swiglu(
+            self.enable_npu_fused_swiglu
+        )
+        self.language_model.model.set_cuda_fused_rotary(
+            self.enable_cuda_fused_rotary
+        )
+        self.language_model.model.set_cuda_fused_swiglu(
+            self.enable_cuda_fused_swiglu
+        )
+        self.action_encoder.pos_encoding.enable_frequency_cache = (
+            self.enable_npu_euler_buffer_cache
+        )
+        if self.mpg is not None:
+            self.mpg.sliced_wasserstein.enable_vectorized_projections = (
+                self.enable_npu_vectorized_mpg
+            )
 
         packed_text_embedding = self.language_model.get_input_embeddings()(packed_text_ids)
         packed_sequence = torch.zeros(size=(sequence_length, self.hidden_size), device=device, dtype=packed_text_embedding.dtype)
         
         packed_sequence[packed_text_indexes] = packed_text_embedding
+        packed_state_embeds = None
+        overlap_vision_state = (
+            self.enable_npu_vision_state_overlap
+            and device.type == "npu"
+            and padded_state is not None
+        )
+        if overlap_vision_state:
+            current_stream = torch.npu.current_stream(device)
+            if self._npu_proprio_stream is None:
+                self._npu_proprio_stream = torch.npu.Stream(device=device)
+            self._npu_proprio_stream.wait_stream(current_stream)
+            with torch.npu.stream(self._npu_proprio_stream):
+                packed_state_embeds = self.proprio_encoder_robot(
+                    padded_state.to(packed_sequence.dtype)
+                )
         vit_embeds = self.extract_feature(packed_vit_tokens)
         vit_embeds = vit_embeds.reshape(-1, self.config.llm_config.hidden_size)
         packed_sequence[packed_vit_token_indexes] = vit_embeds.to(packed_sequence.dtype)
 
         if padded_state is not None:
-            packed_state_embeds = self.proprio_encoder_robot(padded_state.to(packed_sequence.dtype))
+            if overlap_vision_state:
+                current_stream.wait_stream(self._npu_proprio_stream)
+                packed_state_embeds.record_stream(current_stream)
+            else:
+                packed_state_embeds = self.proprio_encoder_robot(
+                    padded_state.to(packed_sequence.dtype)
+                )
 
             if self.use_expert:
                 packed_sequence_gen = torch.zeros(size=(sequence_length, self.action_hidden_size), device=device, dtype=packed_text_embedding.dtype)
@@ -802,6 +1122,25 @@ class BeingH(PreTrainedModel):
                 packed_sequence[packed_state_indexes] = packed_state_embeds
 
         sample_lens_list = sample_lens if isinstance(sample_lens, list) else sample_lens.tolist()
+        parallel_inference = bool(kwargs.get("parallel_inference", False))
+        if device.type == "npu":
+            use_npu_single_sample_fast_path = (
+                resolve_npu_single_sample_fast_path(
+                    self.npu_single_sample_fast_path,
+                    sample_lens_list,
+                    sequence_length,
+                    parallel_inference=parallel_inference,
+                )
+            )
+        else:
+            if self.npu_single_sample_fast_path == "force":
+                raise RuntimeError(
+                    "OPT-03 force mode requires Ascend NPU inference"
+                )
+            use_npu_single_sample_fast_path = False
+        self.language_model.model.set_npu_single_sample_fast_path(
+            use_npu_single_sample_fast_path
+        )
         seqlen = sum(sample_lens_list)
         B = 1
 
@@ -822,7 +1161,14 @@ class BeingH(PreTrainedModel):
         if device.type == "npu":
             if self.config.attn_mode != "causal":
                 raise NotImplementedError("Ascend NPU currently supports causal attention mode only")
-            attention_mask_for_llm = create_npu_causal_masks(sample_lens_list, device)
+            mask_sample_lens = (
+                [sequence_length]
+                if use_npu_single_sample_fast_path
+                else sample_lens_list
+            )
+            attention_mask_for_llm = create_npu_causal_masks(
+                mask_sample_lens, device
+            )
         else:
             sparse_mask = create_sparse_mask(
                 document_lens=padded_sample_lens_list,
@@ -875,9 +1221,220 @@ class BeingH(PreTrainedModel):
                     actions                       # (B, Chunk, A_Dim) - random noise
                 )
 
-            base_packed_sequence = packed_sequence.clone()
+            if self.enable_npu_workspace_reuse:
+                base_packed_sequence = packed_sequence
+            else:
+                base_packed_sequence = packed_sequence.clone()
             if self.use_expert:
-                base_packed_sequence_gen = packed_sequence_gen.clone()
+                if self.enable_npu_workspace_reuse:
+                    base_packed_sequence_gen = packed_sequence_gen
+                else:
+                    base_packed_sequence_gen = packed_sequence_gen.clone()
+
+            supplied_prefix_segment_route = kwargs.get(
+                "npu_prefix_segment_route"
+            )
+            if (
+                supplied_prefix_segment_route is not None
+                and not isinstance(
+                    supplied_prefix_segment_route, PrefixSegmentRoute
+                )
+            ):
+                supplied_prefix_segment_route = None
+                supplied_route_fallback_reason = "invalid_route_type"
+            else:
+                supplied_route_fallback_reason = kwargs.get(
+                    "npu_prefix_segment_route_fallback_reason"
+                )
+            try:
+                prefix_route_single_sample = (
+                    len(
+                        real_sample_lens(
+                            sample_lens_list,
+                            sequence_length,
+                        )
+                    )
+                    == 1
+                )
+            except ValueError:
+                prefix_route_single_sample = False
+            prefix_route_decision = resolve_npu_prefix_segment_route(
+                enabled=self.enable_npu_prefix_segment_route,
+                device_type=device.type,
+                training=self.training,
+                grad_enabled=torch.is_grad_enabled(),
+                static_prefix_cache=self.enable_static_prefix_cache,
+                single_sample=prefix_route_single_sample,
+                parallel_inference=parallel_inference,
+                use_rtc=use_rtc,
+                attention_mode=self.config.attn_mode,
+                use_expert=self.use_expert,
+                route=supplied_prefix_segment_route,
+            )
+            self.npu_prefix_segment_route_last_reason = (
+                supplied_route_fallback_reason
+                if (
+                    prefix_route_decision.reason == "route_unavailable"
+                    and supplied_route_fallback_reason
+                )
+                else prefix_route_decision.reason
+            )
+
+            static_prefix_context = None
+            if self.enable_static_prefix_cache:
+                if device.type not in {"npu", "cuda"}:
+                    raise RuntimeError(
+                        "OPT-01 static prefix cache requires CUDA or NPU"
+                    )
+                if not self.use_expert:
+                    raise RuntimeError(
+                        "OPT-01 static prefix cache requires the MoT expert path"
+                    )
+                if self.config.attn_mode != "causal":
+                    raise RuntimeError(
+                        "OPT-01 static prefix cache requires causal attention"
+                    )
+                if (
+                    not sample_lens_list
+                    or sample_lens_list[0] != sequence_length
+                ):
+                    raise RuntimeError(
+                        "OPT-01 static prefix cache currently requires one real "
+                        "sample; trailing FlexAttention padding is allowed"
+                    )
+
+                action_start = int(packed_action_indexes[0].item())
+                action_count = len(packed_action_indexes)
+                expected_action_indexes = torch.arange(
+                    action_start,
+                    action_start + action_count,
+                    dtype=packed_action_indexes.dtype,
+                    device=device,
+                )
+                if not torch.equal(
+                    packed_action_indexes, expected_action_indexes
+                ):
+                    raise RuntimeError(
+                        "OPT-01 requires contiguous action suffix indexes"
+                    )
+
+                prefix_und_indexes = torch.cat(
+                    [packed_text_indexes, packed_vit_token_indexes], dim=0
+                )
+                prefix_und_indexes = prefix_und_indexes[
+                    prefix_und_indexes < action_start
+                ]
+                prefix_gen_indexes = packed_state_indexes[
+                    packed_state_indexes < action_start
+                ]
+                if (
+                    len(prefix_und_indexes) + len(prefix_gen_indexes)
+                    != action_start
+                ):
+                    raise RuntimeError(
+                        "OPT-01 requires every token before action to be static"
+                    )
+
+                prefix_segment_route = None
+                if prefix_route_decision.eligible:
+                    if supplied_prefix_segment_route.matches(
+                        prefix_length=action_start,
+                        und_length=len(prefix_und_indexes),
+                        gen_length=len(prefix_gen_indexes),
+                    ):
+                        prefix_segment_route = supplied_prefix_segment_route
+                    else:
+                        self.npu_prefix_segment_route_last_reason = (
+                            "route_shape_mismatch"
+                        )
+
+                mask_cache_key = (
+                    str(device),
+                    action_start,
+                    action_count,
+                )
+                cached_masks = None
+                if self.enable_npu_static_tensor_cache:
+                    cached_masks = self._npu_static_mask_cache.get(
+                        mask_cache_key
+                    )
+                if cached_masks is not None:
+                    prefix_attention_mask, action_attention_mask = cached_masks
+                else:
+                    prefix_attention_mask = create_npu_causal_masks(
+                        [action_start], device
+                    )[0]
+                    query_positions = torch.arange(
+                        action_start,
+                        action_start + action_count,
+                        device=device,
+                    ).unsqueeze(1)
+                    key_positions = torch.arange(
+                        action_start + action_count, device=device
+                    ).unsqueeze(0)
+                    action_attention_mask = torch.full(
+                        (action_count, action_start + action_count),
+                        float("-inf"),
+                        dtype=torch.bfloat16,
+                        device=device,
+                    )
+                    action_attention_mask.masked_fill_(
+                        key_positions <= query_positions, 0
+                    )
+                    if self.enable_npu_static_tensor_cache:
+                        if len(self._npu_static_mask_cache) >= 16:
+                            self._npu_static_mask_cache.clear()
+                        self._npu_static_mask_cache[mask_cache_key] = (
+                            prefix_attention_mask,
+                            action_attention_mask,
+                        )
+                prefix_inputs = {
+                    "packed_sequence_und": base_packed_sequence[
+                        prefix_und_indexes
+                    ],
+                    "packed_sequence_gen": base_packed_sequence_gen[
+                        prefix_gen_indexes
+                    ],
+                    "packed_position_ids": packed_position_ids[:action_start],
+                    "packed_und_token_indexes": prefix_und_indexes,
+                    "packed_gen_token_indexes": prefix_gen_indexes,
+                    "attention_mask": prefix_attention_mask,
+                }
+                prefix_cache = None
+                if (
+                    self.enable_npu_prefix_graph_replay
+                    and device.type == "npu"
+                ):
+                    prefix_cache = self._get_npu_prefix_graph_runner().forward(
+                        **prefix_inputs,
+                        feature_flags={
+                            "attention_mode": self.config.attn_mode,
+                            "prefix_length": action_start,
+                            "und_length": len(prefix_und_indexes),
+                            "gen_length": len(prefix_gen_indexes),
+                            "use_expert": self.use_expert,
+                            "npu_fusion_attention": self.enable_npu_fusion_attention,
+                            "npu_fusion_attention_layout": (
+                                self.npu_fusion_attention_input_layout
+                            ),
+                            "npu_projection_fusion": self.enable_npu_projection_fusion,
+                            "npu_fused_rotary": self.enable_npu_fused_rotary,
+                            "npu_fused_swiglu": self.enable_npu_fused_swiglu,
+                        },
+                        prefix_segment_route=prefix_segment_route,
+                    )
+                if prefix_cache is None:
+                    prefix_cache = self.language_model.build_static_prefix_cache(
+                        **prefix_inputs,
+                        prefix_segment_route=prefix_segment_route,
+                    )
+                static_prefix_context = {
+                    "cache": prefix_cache,
+                    "position_ids": packed_position_ids[
+                        action_start : action_start + action_count
+                    ],
+                    "attention_mask": action_attention_mask,
+                }
 
             # =====================================================================
             # MPG Inference: Two-Stage Approach
@@ -897,10 +1454,131 @@ class BeingH(PreTrainedModel):
             # Total iterations: 1 baseline + N refinement
             total_iterations = 1 + (mpg_refinement_iters if use_mpg_inference else 0)
             predicted_action_emb = None  # Will be set after first iteration for MPG
+            action_suffix_graph_session = None
+            baseline_flow_graph_session = None
+            capture_route = resolve_npu_capture_replay_route(
+                enabled=self.enable_npu_capture_replay,
+                device_type=device.type,
+                training=self.training,
+                grad_enabled=torch.is_grad_enabled(),
+                static_prefix_cache=self.enable_static_prefix_cache,
+                has_static_prefix_context=static_prefix_context is not None,
+                parallel_inference=parallel_inference,
+                use_rtc=use_rtc,
+                attention_mode=self.config.attn_mode,
+                use_expert=self.use_expert,
+                flow_steps=num_steps,
+                use_mpg=use_mpg_inference,
+                mpg_refinement_iters=mpg_refinement_iters,
+                adaptive_flow_steps=self.enable_adaptive_flow_steps,
+                adaptive_mpg_refinement=(
+                    self.enable_adaptive_mpg_refinement
+                ),
+                allow_adaptive_flow_replay=(
+                    self.enable_npu_adaptive_flow_graph_replay
+                ),
+            )
+            if capture_route.eligible:
+                action_suffix_graph_session = (
+                    self._get_npu_action_suffix_graph_runner().try_open_request(
+                        prefix_cache=static_prefix_context["cache"],
+                        packed_position_ids=static_prefix_context["position_ids"],
+                        attention_mask=static_prefix_context["attention_mask"],
+                        feature_flags={
+                            "attention_mode": self.config.attn_mode,
+                            "chunk_length": self.action_chunk_length,
+                            "flow_steps": num_steps,
+                            "adaptive_flow_steps": (
+                                self.enable_adaptive_flow_steps
+                            ),
+                            "adaptive_flow_min_steps": (
+                                self.adaptive_flow_min_steps
+                            ),
+                            "adaptive_flow_velocity_threshold": (
+                                self.adaptive_flow_velocity_threshold
+                            ),
+                            "adaptive_flow_graph_replay": (
+                                self.enable_npu_adaptive_flow_graph_replay
+                            ),
+                            "mpg_enabled": use_mpg_inference,
+                            "mpg_lambda": self.mpg.lambda_strength,
+                            "mpg_projections": self.mpg.sliced_wasserstein.num_projections,
+                            "mpg_refinement_iters": mpg_refinement_iters,
+                            "npu_capture_replay": self.enable_npu_capture_replay,
+                            "npu_fusion_attention": self.enable_npu_fusion_attention,
+                            "cuda_gqa_attention": self.enable_cuda_gqa_attention,
+                            "npu_fusion_attention_layout": (
+                                self.npu_fusion_attention_input_layout
+                            ),
+                            "npu_hybrid_attention_layout": (
+                                self.enable_npu_hybrid_attention_layout
+                            ),
+                            "npu_kv_workspace": self.enable_npu_kv_workspace,
+                            "npu_add_rms_norm": self.enable_npu_add_rms_norm,
+                            "npu_fused_rotary": self.enable_npu_fused_rotary,
+                            "npu_fused_swiglu": self.enable_npu_fused_swiglu,
+                            "cuda_fused_rotary": self.enable_cuda_fused_rotary,
+                            "cuda_fused_swiglu": self.enable_cuda_fused_swiglu,
+                            "npu_single_sample_fast_path": self.npu_single_sample_fast_path,
+                            "rtc": use_rtc,
+                            "static_prefix_cache": self.enable_static_prefix_cache,
+                            "use_expert": self.use_expert,
+                        },
+                    )
+                )
+                if self.enable_npu_baseline_flow_graph_replay:
+                    baseline_flow_graph_session = (
+                        self._get_npu_baseline_flow_graph_runner().try_open_request(
+                            prefix_cache=static_prefix_context["cache"],
+                            packed_position_ids=static_prefix_context[
+                                "position_ids"
+                            ],
+                            attention_mask=static_prefix_context[
+                                "attention_mask"
+                            ],
+                            feature_flags={
+                                "graph_scope": "baseline_flow_iteration",
+                                "attention_mode": self.config.attn_mode,
+                                "chunk_length": self.action_chunk_length,
+                                "flow_steps": num_steps,
+                                "npu_fusion_attention": (
+                                    self.enable_npu_fusion_attention
+                                ),
+                                "npu_fusion_attention_layout": (
+                                    self.npu_fusion_attention_input_layout
+                                ),
+                                "npu_hybrid_attention_layout": (
+                                    self.enable_npu_hybrid_attention_layout
+                                ),
+                                "npu_fused_rotary": (
+                                    self.enable_npu_fused_rotary
+                                ),
+                                "npu_fused_swiglu": (
+                                    self.enable_npu_fused_swiglu
+                                ),
+                                "static_prefix_cache": (
+                                    self.enable_static_prefix_cache
+                                ),
+                            },
+                        )
+                    )
 
-            for iteration in range(total_iterations):
+            self.last_adaptive_flow_steps = []
+            self.last_adaptive_flow_residuals = []
+            self.last_adaptive_flow_residual_traces = []
+            self.last_adaptive_mpg_gate = None
+            self.last_adaptive_mpg_skipped = False
+            skip_mpg_refinement = False
+            # `profiled_loop` is an identity function unless a profiler is
+            # attached (see PROFILE_LOOP_HOOK above).
+            for iteration in profiled_loop(
+                "mpg_iteration", range(total_iterations)
+            ):
+                if iteration > 0 and skip_mpg_refinement:
+                    break
                 # Reset actions for each iteration (start from noise)
                 actions = torch.randn(action_shape, device=device, dtype=packed_text_embedding.dtype)
+                residual_trace = []
 
                 # RTC: Re-apply prefix from prev_chunk for each iteration
                 if use_rtc:
@@ -910,7 +1588,16 @@ class BeingH(PreTrainedModel):
                         actions
                     )
 
-                for t_step in range(num_steps):
+                flow_steps = range(num_steps)
+                if iteration == 0 and baseline_flow_graph_session is not None:
+                    actions = baseline_flow_graph_session.forward(actions)
+                    completed_steps = num_steps
+                    residual_value = None
+                    flow_steps = ()
+
+                # `profiled_loop` is an identity function unless a profiler is
+                # attached (see PROFILE_LOOP_HOOK above).
+                for t_step in profiled_loop("flow_step", flow_steps):
                     t_continuous = t_step / float(num_steps)  # Time from 0 -> 1
                     t_discretized = int(t_continuous * self.num_timestep_buckets)
 
@@ -921,6 +1608,7 @@ class BeingH(PreTrainedModel):
                             prev_chunk_padded,
                             actions
                         )
+
                         timesteps_full = torch.full(
                             (B, self.action_chunk_length),
                             t_continuous,
@@ -930,20 +1618,73 @@ class BeingH(PreTrainedModel):
                         timesteps_full = torch.where(prefix_mask, 1.0, timesteps_full)
                         actions_flat = actions.reshape(B * self.action_chunk_length, -1)
                         timesteps_flat = (timesteps_full.reshape(-1) * self.num_timestep_buckets).long()
-                        action_features = self.action_encoder(actions_flat, timesteps_flat)
+                        action_features = self._run_action_module(
+                            "action_encoder",
+                            self.action_encoder,
+                            actions_flat,
+                            timesteps_flat,
+                        )
                         action_features = action_features.reshape(B, self.action_chunk_length, -1)
                     else:
-                        timesteps_tensor = torch.full(size=(B,), fill_value=t_discretized, device=device)
-                        action_features = self.action_encoder(actions, timesteps_tensor)
+                        timestep_key = (str(device), B, t_discretized)
+                        timesteps_tensor = (
+                            self._npu_timestep_tensor_cache.get(timestep_key)
+                            if self.enable_npu_static_tensor_cache
+                            else None
+                        )
+                        if timesteps_tensor is None:
+                            timesteps_tensor = torch.full(
+                                size=(B,),
+                                fill_value=t_discretized,
+                                device=device,
+                            )
+                            if self.enable_npu_static_tensor_cache:
+                                self._npu_timestep_tensor_cache[
+                                    timestep_key
+                                ] = timesteps_tensor
+                        action_features = self._run_action_module(
+                            "action_encoder",
+                            self.action_encoder,
+                            actions,
+                            timesteps_tensor,
+                        )
 
                     action_features_flat = action_features.reshape(B * self.action_chunk_length, -1)
 
-                    current_packed_sequence = base_packed_sequence.clone()
-                    if self.use_expert:
-                        current_packed_sequence_gen = base_packed_sequence_gen.clone()
-                        current_packed_sequence_gen[packed_action_indexes] = action_features_flat.to(current_packed_sequence_gen.dtype)
+                    reuse_static_workspace = (
+                        self.enable_npu_workspace_reuse
+                        and static_prefix_context is not None
+                    )
+                    if reuse_static_workspace:
+                        # OPT-08: the static-prefix path only consumes the
+                        # action suffix.  Keep the immutable prefix tensors by
+                        # reference and carry the suffix directly, avoiding
+                        # two full-sequence clones plus an indexed overwrite
+                        # for every flow step.
+                        current_packed_sequence = base_packed_sequence
+                        current_packed_sequence_gen = (
+                            base_packed_sequence_gen
+                        )
+                        dynamic_action_sequence = action_features_flat.to(
+                            current_packed_sequence_gen.dtype
+                        )
                     else:
-                        current_packed_sequence[packed_action_indexes] = action_features_flat.to(current_packed_sequence.dtype)
+                        current_packed_sequence = base_packed_sequence.clone()
+                        if self.use_expert:
+                            current_packed_sequence_gen = (
+                                base_packed_sequence_gen.clone()
+                            )
+                            current_packed_sequence_gen[
+                                packed_action_indexes
+                            ] = action_features_flat.to(
+                                current_packed_sequence_gen.dtype
+                            )
+                        else:
+                            current_packed_sequence[
+                                packed_action_indexes
+                            ] = action_features_flat.to(
+                                current_packed_sequence.dtype
+                            )
 
                     # =====================================================================
                     # MPG Per-Step Enhancement (for refinement iterations only)
@@ -957,7 +1698,13 @@ class BeingH(PreTrainedModel):
 
                         # Extract action features (action dimension)
                         if self.use_expert:
-                            action_features_cur = current_packed_sequence_gen[packed_action_indexes]
+                            action_features_cur = (
+                                dynamic_action_sequence
+                                if reuse_static_workspace
+                                else current_packed_sequence_gen[
+                                    packed_action_indexes
+                                ]
+                            )
                         else:
                             action_features_cur = current_packed_sequence[packed_action_indexes]
 
@@ -987,12 +1734,47 @@ class BeingH(PreTrainedModel):
                         # Update packed sequences with enhanced features
                         current_packed_sequence[packed_state_indexes] = enhanced_state.to(current_packed_sequence.dtype)
                         if self.use_expert:
-                            current_packed_sequence_gen[packed_action_indexes] = enhanced_action.to(current_packed_sequence_gen.dtype)
+                            if reuse_static_workspace:
+                                dynamic_action_sequence = enhanced_action.to(
+                                    current_packed_sequence_gen.dtype
+                                )
+                            else:
+                                current_packed_sequence_gen[
+                                    packed_action_indexes
+                                ] = enhanced_action.to(
+                                    current_packed_sequence_gen.dtype
+                                )
                         else:
                             current_packed_sequence[packed_action_indexes] = enhanced_action.to(current_packed_sequence.dtype)
 
                     # Prepare token indexes for LLM
-                    if self.use_expert:
+                    if static_prefix_context is not None:
+                        action_sequence = (
+                            dynamic_action_sequence
+                            if reuse_static_workspace
+                            else current_packed_sequence_gen[
+                                packed_action_indexes
+                            ]
+                        )
+                        if action_suffix_graph_session is not None:
+                            hidden_states_gen = action_suffix_graph_session.forward(
+                                action_sequence
+                            )
+                        else:
+                            hidden_states_gen = (
+                                self.language_model.forward_action_with_prefix_cache(
+                                    action_sequence=action_sequence,
+                                    packed_position_ids=static_prefix_context[
+                                        "position_ids"
+                                    ],
+                                    attention_mask=static_prefix_context[
+                                        "attention_mask"
+                                    ],
+                                    prefix_cache=static_prefix_context["cache"],
+                                )
+                            )
+                        last_hidden_state_act = hidden_states_gen
+                    elif self.use_expert:
                         packed_und_token_indexes = torch.cat([packed_text_indexes, packed_vit_token_indexes], dim=0)
                         packed_gen_token_indexes = torch.cat([packed_state_indexes, packed_action_indexes], dim=0)
                         current_packed_sequence_und = current_packed_sequence[packed_und_token_indexes]
@@ -1003,23 +1785,26 @@ class BeingH(PreTrainedModel):
                         current_packed_sequence_und = current_packed_sequence[packed_und_token_indexes]
                         current_packed_sequence_gen_slice = torch.tensor([], dtype=packed_text_embedding.dtype, device=device).view(0, self.action_hidden_size)
 
-                    extra_inputs = {
-                        "packed_und_token_indexes": packed_und_token_indexes,
-                        "packed_gen_token_indexes": packed_gen_token_indexes
-                    }
-                    hidden_states_und, hidden_states_gen = self.language_model.forward_train(
-                        packed_sequence_und=current_packed_sequence_und, packed_sequence_gen=current_packed_sequence_gen_slice,
-                        sample_lens=sample_lens_list, attention_mask=attention_mask_for_llm,
-                        packed_position_ids=packed_position_ids, **extra_inputs,
-                    )
+                    if static_prefix_context is None:
+                        extra_inputs = {
+                            "packed_und_token_indexes": packed_und_token_indexes,
+                            "packed_gen_token_indexes": packed_gen_token_indexes
+                        }
+                        hidden_states_und, hidden_states_gen = self.language_model.forward_train(
+                            packed_sequence_und=current_packed_sequence_und, packed_sequence_gen=current_packed_sequence_gen_slice,
+                            sample_lens=sample_lens_list, attention_mask=attention_mask_for_llm,
+                            packed_position_ids=packed_position_ids, **extra_inputs,
+                        )
 
-                    if self.use_expert:
-                        last_hidden_state_act = hidden_states_gen[len(packed_state_indexes):]
-                    else:
-                        start_idx = len(packed_text_indexes) + len(packed_vit_token_indexes) + len(packed_state_indexes)
-                        last_hidden_state_act = hidden_states_und[start_idx:]
+                        if self.use_expert:
+                            last_hidden_state_act = hidden_states_gen[len(packed_state_indexes):]
+                        else:
+                            start_idx = len(packed_text_indexes) + len(packed_vit_token_indexes) + len(packed_state_indexes)
+                            last_hidden_state_act = hidden_states_und[start_idx:]
 
-                    pred_velocity = self.action_decoder(
+                    pred_velocity = self._run_action_module(
+                        "action_decoder",
+                        self.action_decoder,
                         last_hidden_state_act.reshape(B, self.action_chunk_length, -1)
                     )
 
@@ -1036,12 +1821,108 @@ class BeingH(PreTrainedModel):
                             actions
                         )
 
+                    completed_steps = t_step + 1
+                    residual_value = None
+                    if self.enable_adaptive_flow_steps:
+                        residual_value = float(
+                            relative_velocity_residual(
+                                actions, pred_velocity
+                            ).item()
+                        )
+                        residual_trace.append(residual_value)
+                        if should_terminate_flow(
+                            completed_steps=completed_steps,
+                            min_steps=self.adaptive_flow_min_steps,
+                            residual=residual_value,
+                            threshold=(
+                                self.adaptive_flow_velocity_threshold
+                            ),
+                        ):
+                            remaining_steps = num_steps - completed_steps
+                            actions = euler_extrapolate_remaining(
+                                actions,
+                                pred_velocity,
+                                dt=dt,
+                                remaining_steps=remaining_steps,
+                            )
+                            if use_rtc:
+                                actions = torch.where(
+                                    prefix_mask.unsqueeze(-1),
+                                    prev_chunk_padded,
+                                    actions,
+                                )
+                            break
+
+                self.last_adaptive_flow_steps.append(completed_steps)
+                self.last_adaptive_flow_residuals.append(residual_value)
+                self.last_adaptive_flow_residual_traces.append(
+                    residual_trace
+                )
+
                 # After each iteration, encode predicted actions as CLEAN embeddings for next iteration
                 if use_mpg_inference and iteration < total_iterations - 1:
-                    t_clean = torch.zeros(B, dtype=torch.long, device=device)
-                    predicted_action_emb = self.action_encoder(actions, t_clean)
+                    clean_timestep_key = (str(device), B, 0)
+                    t_clean = (
+                        self._npu_timestep_tensor_cache.get(
+                            clean_timestep_key
+                        )
+                        if self.enable_npu_static_tensor_cache
+                        else None
+                    )
+                    if t_clean is None:
+                        t_clean = torch.zeros(
+                            B, dtype=torch.long, device=device
+                        )
+                        if self.enable_npu_static_tensor_cache:
+                            self._npu_timestep_tensor_cache[
+                                clean_timestep_key
+                            ] = t_clean
+                    predicted_action_emb = self._run_action_module(
+                        "action_encoder",
+                        self.action_encoder,
+                        actions,
+                        t_clean,
+                    )
                     # Shape: (B, action_chunk_length, action_hidden_size)
+                    if (
+                        self.enable_adaptive_mpg_refinement
+                        and iteration == 0
+                    ):
+                        npu_rng_state = (
+                            torch.npu.get_rng_state(device)
+                            if device.type == "npu"
+                            else None
+                        )
+                        state_features = base_packed_sequence[
+                            packed_state_indexes
+                        ]
+                        action_features_proj = self.action_to_vlm_proj(
+                            predicted_action_emb.reshape(
+                                B * self.action_chunk_length, -1
+                            )
+                        )
+                        suffix_features = torch.cat(
+                            [state_features, action_features_proj], dim=0
+                        ).unsqueeze(0)
+                        _, gate, _ = self.mpg(
+                            suffix_features,
+                            predicted_action_emb,
+                            return_gate=True,
+                        )
+                        if npu_rng_state is not None:
+                            torch.npu.set_rng_state(npu_rng_state, device)
+                        gate_value = float(gate.float().mean().item())
+                        self.last_adaptive_mpg_gate = gate_value
+                        skip_mpg_refinement = should_skip_mpg_refinement(
+                            gate=gate_value,
+                            threshold=self.adaptive_mpg_gate_threshold,
+                        )
+                        self.last_adaptive_mpg_skipped = skip_mpg_refinement
 
+            if action_suffix_graph_session is not None:
+                action_suffix_graph_session.close()
+            if baseline_flow_graph_session is not None:
+                baseline_flow_graph_session.close()
             predicted_actions = actions
             predicted_actions = predicted_actions.reshape(B * self.action_chunk_length, -1)
             
@@ -1110,7 +1991,7 @@ class BeingH(PreTrainedModel):
         x = x.permute(0, 2, 1, 3).contiguous()
         return x
 
-    def extract_feature(self, pixel_values):
+    def _extract_feature_eager(self, pixel_values):
         if self.select_layer == -1:
             vit_embeds = self.vit_model(
                 pixel_values=pixel_values,
@@ -1129,6 +2010,34 @@ class BeingH(PreTrainedModel):
         vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], -1, vit_embeds.shape[-1])
         vit_embeds = self.connector(vit_embeds)
         return vit_embeds
+
+    def extract_feature(self, pixel_values):
+        if (
+            not self.enable_npu_vision_compile
+            or pixel_values.device.type != "npu"
+        ):
+            return self._extract_feature_eager(pixel_values)
+        if self._npu_compiled_vision is None:
+            if self.enable_npu_persistent_compile_cache:
+                from torch_npu.dynamo.torchair.inference import cache_compile
+
+                cache_dir = self.npu_compile_cache_dir or os.getenv(
+                    "BEINGH_NPU_COMPILE_CACHE_DIR",
+                    os.path.join(os.getcwd(), ".beingh_npu_compile_cache"),
+                )
+                self._npu_compiled_vision = cache_compile(
+                    self._extract_feature_eager,
+                    dynamic=False,
+                    cache_dir=cache_dir,
+                )
+            else:
+                self._npu_compiled_vision = torch.compile(
+                    self._extract_feature_eager,
+                    backend="npu",
+                    fullgraph=True,
+                    dynamic=False,
+                )
+        return self._npu_compiled_vision(pixel_values)
 
     @property
     def lm_head(self):

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from functools import partial
 from typing import Callable, Optional, Tuple, Union
 from transformers.activations import ACT2FN
@@ -24,6 +25,12 @@ from transformers.utils import (
 )
 from transformers.utils.deprecation import deprecate_kwarg
 from .configuration_qwen3 import Qwen3Config
+from BeingH.cuda_fused_ops import fused_swiglu
+from BeingH.fused_projection_storage import combined_storage_view
+try:
+    import torch_npu
+except ImportError:
+    torch_npu = None
 
 logger = logging.get_logger(__name__)
 
@@ -38,8 +45,20 @@ class Qwen3RMSNorm(nn.Module):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
+        self.enable_npu_fused_rms_norm = False
 
     def forward(self, hidden_states):
+        if (
+            self.enable_npu_fused_rms_norm
+            and hidden_states.device.type == "npu"
+        ):
+            if torch_npu is None:
+                raise RuntimeError("OPT-06 NPU RMSNorm requires torch-npu")
+            return torch_npu.npu_rms_norm(
+                hidden_states,
+                self.weight,
+                epsilon=self.variance_epsilon,
+            )[0]
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
@@ -60,9 +79,53 @@ class Qwen3MLP(nn.Module):
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
+        # OPT-06 is deliberately opt-in.  The packed tensor is derived from
+        # the checkpoint parameters and is not registered in the state dict,
+        # so checkpoint compatibility and the original training path remain
+        # unchanged.
+        self.enable_npu_gate_up_fusion = False
+        self.enable_npu_fused_swiglu = False
+        self.enable_cuda_fused_swiglu = False
+        self._npu_fused_gate_up_weight = None
+
+    def _get_npu_fused_gate_up_weight(self):
+        weight = self._npu_fused_gate_up_weight
+        expected_rows = self.gate_proj.weight.shape[0] * 2
+        if (
+            weight is None
+            or weight.device != self.gate_proj.weight.device
+            or weight.dtype != self.gate_proj.weight.dtype
+            or weight.shape[0] != expected_rows
+        ):
+            weight = combined_storage_view(
+                (self.gate_proj.weight, self.up_proj.weight)
+            )
+            if weight is not None:
+                weight = weight.detach()
+            else:
+                weight = torch.cat(
+                    (self.gate_proj.weight, self.up_proj.weight), dim=0
+                ).detach()
+            self._npu_fused_gate_up_weight = weight
+        return weight
 
     def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        if self.enable_npu_gate_up_fusion:
+            gate_up = F.linear(x, self._get_npu_fused_gate_up_weight())
+            if self.enable_npu_fused_swiglu and gate_up.device.type == "npu":
+                if torch_npu is None:
+                    raise RuntimeError("NPU fused SwiGLU requires torch-npu")
+                hidden = torch_npu.npu_swiglu(gate_up, dim=-1)
+            elif self.enable_cuda_fused_swiglu and gate_up.device.type == "cuda":
+                hidden = fused_swiglu(gate_up)
+            else:
+                gate, up = gate_up.split(self.intermediate_size, dim=-1)
+                hidden = self.act_fn(gate) * up
+        else:
+            gate = self.gate_proj(x)
+            up = self.up_proj(x)
+            hidden = self.act_fn(gate) * up
+        down_proj = self.down_proj(hidden)
         return down_proj
 
 
@@ -851,4 +914,3 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-

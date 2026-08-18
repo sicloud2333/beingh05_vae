@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
+import time
 from scipy.interpolate import interp1d
 from scipy.spatial.transform import Slerp
 from scipy.spatial.transform import Rotation as R
@@ -101,6 +102,8 @@ class Policy_Libero:
     def reset(self):
         self.t = 0
         self.action_chunk = []
+        self.request_latencies_ms = []
+        self.last_request_latency_ms = None
 
     def get_action(self, obs_dict):
         if self.t == self.exec_chunk_size or self.t >= len(self.action_chunk):
@@ -109,7 +112,12 @@ class Policy_Libero:
         # breakpoint()
 
         if self.t == 0:
+            request_started = time.perf_counter()
             action_chunk = self.policy.get_action(obs_dict)
+            self.last_request_latency_ms = (
+                time.perf_counter() - request_started
+            ) * 1000.0
+            self.request_latencies_ms.append(self.last_request_latency_ms)
 
             self.action_chunk = np.concatenate([np.array(v) for v in action_chunk.values()], axis=-1)
 

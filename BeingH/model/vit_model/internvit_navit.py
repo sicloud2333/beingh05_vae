@@ -153,8 +153,15 @@ class InternVisionEmbeddings(nn.Module):
 
     def _get_pos_embed(self, pos_embed, H, W):
         target_dtype = pos_embed.dtype
+        source_size = self.image_size // self.patch_size
+        if H == source_size and W == source_size:
+            # OPT-13: interpolation at identical source/target resolution is
+            # an identity. Besides removing needless work, this avoids an NPU
+            # Dynamo fake-tensor decomposition that requests an unsupported
+            # contiguous memory format.
+            return pos_embed
         pos_embed = pos_embed.float().reshape(
-            1, self.image_size // self.patch_size, self.image_size // self.patch_size, -1).permute(0, 3, 1, 2)
+            1, source_size, source_size, -1).permute(0, 3, 1, 2)
         pos_embed = F.interpolate(pos_embed, size=(H, W), mode='bicubic', align_corners=False). \
             reshape(1, -1, H * W).permute(0, 2, 1).to(target_dtype)
         return pos_embed

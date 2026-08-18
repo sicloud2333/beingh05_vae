@@ -15,6 +15,11 @@ from transformers.utils import logging
 from .configuration_intern_vit import InternVisionConfig
 
 try:
+    import torch_npu
+except ImportError:
+    torch_npu = None
+
+try:
     from flash_attn.bert_padding import pad_input, unpad_input
     from flash_attn.flash_attn_interface import \
         flash_attn_varlen_qkvpacked_func
@@ -177,6 +182,7 @@ class InternAttention(nn.Module):
         self.embed_dim = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.use_flash_attn = config.use_flash_attn and has_flash_attn
+        self.enable_npu_fusion_attention = False
         if config.use_flash_attn and not has_flash_attn:
             print('Warning: Flash Attention is not available, use_flash_attn is set to False.')
         self.head_dim = self.embed_dim // self.num_heads
@@ -237,9 +243,64 @@ class InternAttention(nn.Module):
         outs = self.proj_drop(outs)
         return outs
 
+    def _npu_fused_attn(self, x):
+        if torch_npu is None or x.device.type != "npu":
+            raise RuntimeError(
+                "ViT NPU fusion attention requires torch-npu NPU tensors"
+            )
+        if self.config.attention_dropout != 0:
+            raise RuntimeError(
+                "ViT NPU fusion attention currently requires zero attention dropout"
+            )
+
+        batch_size, sequence_length, hidden_size = x.shape
+        qkv = self.qkv(x).reshape(
+            batch_size,
+            sequence_length,
+            3,
+            self.num_heads,
+            self.head_dim,
+        )
+        query, key, value = qkv.unbind(2)
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+
+        if self.qk_normalization:
+            query = self.q_norm(
+                query.transpose(1, 2).flatten(-2, -1)
+            ).view(
+                batch_size, sequence_length, self.num_heads, self.head_dim
+            ).transpose(1, 2)
+            key = self.k_norm(
+                key.transpose(1, 2).flatten(-2, -1)
+            ).view(
+                batch_size, sequence_length, self.num_heads, self.head_dim
+            ).transpose(1, 2)
+
+        context = torch_npu.npu_fusion_attention(
+            query,
+            key,
+            value,
+            head_num=self.num_heads,
+            input_layout="BNSD",
+            scale=self.scale,
+            keep_prob=1.0,
+            sparse_mode=0,
+            sync=True,
+        )[0]
+        context = context.transpose(1, 2).reshape(
+            batch_size, sequence_length, hidden_size
+        )
+        context = self.proj(context)
+        return self.proj_drop(context)
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        x = self._naive_attn(hidden_states) if not self.use_flash_attn else self._flash_attn(hidden_states)
-        return x
+        if self.enable_npu_fusion_attention:
+            return self._npu_fused_attn(hidden_states)
+        if self.use_flash_attn:
+            return self._flash_attn(hidden_states)
+        return self._naive_attn(hidden_states)
 
 
 class InternMLP(nn.Module):
@@ -307,6 +368,8 @@ class InternVisionEncoder(nn.Module):
         self.layers = nn.ModuleList([
             InternVisionEncoderLayer(config, dpr[idx]) for idx in range(config.num_hidden_layers)])
         self.gradient_checkpointing = True
+        self.checkpoint_use_reentrant = True
+        self.checkpoint_preserve_rng_state = True
 
     def forward(
             self,
@@ -338,7 +401,10 @@ class InternVisionEncoder(nn.Module):
             if self.gradient_checkpointing and self.training:
                 layer_outputs = torch.utils.checkpoint.checkpoint(
                     encoder_layer,
-                    hidden_states)
+                    hidden_states,
+                    use_reentrant=self.checkpoint_use_reentrant,
+                    preserve_rng_state=self.checkpoint_preserve_rng_state,
+                )
             else:
                 layer_outputs = encoder_layer(
                     hidden_states,
