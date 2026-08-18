@@ -58,6 +58,17 @@ def create_sparse_mask(document_lens, split_lens, attn_modes, device):
     return and_masks(or_masks(causal_mask, full_mask), sample_mask)
 
 
+def create_npu_causal_masks(sample_lens, device):
+    """Build per-sample additive masks for the Qwen dense-SDPA path."""
+    masks = []
+    for length in sample_lens:
+        mask = torch.full(
+            (length, length), float("-inf"), dtype=torch.bfloat16, device=device
+        )
+        masks.append(torch.triu(mask, diagonal=1))
+    return masks
+
+
 class BeingHConfig(PretrainedConfig):
     model_type = 'beingh'
     is_composition = True
@@ -576,22 +587,25 @@ class BeingH(PreTrainedModel):
             packed_gen_token_indexes = torch.tensor([], dtype=torch.long, device=device)
             packed_sequence_gen = torch.tensor([], dtype=packed_sequence_und.dtype, device=device).view(0, self.action_hidden_size)
        
-        sparse_mask = create_sparse_mask(
-            document_lens=sample_lens,
-            split_lens=sample_lens if self.config.attn_mode=="causal" else split_lens, 
-            attn_modes=attn_modes, 
-            device=device
-        )
-
-        seqlen = sum(sample_lens)
-
-        block_mask = create_block_mask(
-            sparse_mask, B=1, H=self.config.llm_config.num_attention_heads, 
-            Q_LEN=seqlen, KV_LEN=seqlen, 
-            device=packed_text_embedding.device, BLOCK_SIZE=128, _compile=True
-        )
-
-        attention_mask = block_mask
+        if device.type == "npu":
+            if self.config.attn_mode != "causal":
+                raise NotImplementedError("Ascend NPU currently supports causal attention mode only")
+            attention_mask = create_npu_causal_masks(sample_lens, device)
+            llm_sample_lens = sample_lens
+        else:
+            sparse_mask = create_sparse_mask(
+                document_lens=sample_lens,
+                split_lens=sample_lens if self.config.attn_mode=="causal" else split_lens,
+                attn_modes=attn_modes,
+                device=device
+            )
+            seqlen = sum(sample_lens)
+            attention_mask = create_block_mask(
+                sparse_mask, B=1, H=self.config.llm_config.num_attention_heads,
+                Q_LEN=seqlen, KV_LEN=seqlen,
+                device=packed_text_embedding.device, BLOCK_SIZE=128, _compile=True
+            )
+            llm_sample_lens = split_lens
 
         extra_inputs = {
             "packed_und_token_indexes": packed_und_token_indexes,
@@ -601,7 +615,7 @@ class BeingH(PreTrainedModel):
         hidden_states_und, hidden_states_gen = self.language_model.forward_train(
             packed_sequence_und=packed_sequence_und,
             packed_sequence_gen=packed_sequence_gen,
-            sample_lens=split_lens,
+            sample_lens=llm_sample_lens,
             attention_mask=attention_mask,
             packed_position_ids=packed_position_ids,
             **extra_inputs,
@@ -805,19 +819,22 @@ class BeingH(PreTrainedModel):
             padded_attn_modes = attn_modes
             padded_seqlen = seqlen
 
-        sparse_mask = create_sparse_mask(
-            document_lens=padded_sample_lens_list,
-            split_lens=padded_sample_lens_list,
-            attn_modes=padded_attn_modes,
-            device=device
-        )
-
-        block_mask = create_block_mask(
-            sparse_mask, B=1, H=self.config.llm_config.num_attention_heads,
-            Q_LEN=padded_seqlen, KV_LEN=padded_seqlen,
-            device=device, BLOCK_SIZE=BLOCK_SIZE, _compile=True
-        )
-        attention_mask_for_llm = block_mask
+        if device.type == "npu":
+            if self.config.attn_mode != "causal":
+                raise NotImplementedError("Ascend NPU currently supports causal attention mode only")
+            attention_mask_for_llm = create_npu_causal_masks(sample_lens_list, device)
+        else:
+            sparse_mask = create_sparse_mask(
+                document_lens=padded_sample_lens_list,
+                split_lens=padded_sample_lens_list,
+                attn_modes=padded_attn_modes,
+                device=device
+            )
+            attention_mask_for_llm = create_block_mask(
+                sparse_mask, B=1, H=self.config.llm_config.num_attention_heads,
+                Q_LEN=padded_seqlen, KV_LEN=padded_seqlen,
+                device=device, BLOCK_SIZE=BLOCK_SIZE, _compile=True
+            )
 
         if self.use_flow_matching:
             num_steps = self.num_inference_timesteps

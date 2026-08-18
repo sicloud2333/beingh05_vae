@@ -9,12 +9,17 @@ import io
 import imageio
 import re
 import random
-import decord
 import numpy as np
 import torchvision
 from PIL import Image
-from decord import VideoReader
 from typing import List, Optional, Tuple, Union
+
+try:
+    import decord
+    from decord import VideoReader
+except ImportError:
+    decord = None
+    VideoReader = None
 
 
 # ==============================================================================
@@ -51,6 +56,8 @@ def get_frames_by_indices(
     if video_backend_kwargs is None:
         video_backend_kwargs = {}
 
+    if video_backend == "decord" and decord is None:
+        video_backend = "opencv"
     if video_backend == "decord":
         vr = decord.VideoReader(video_path, **video_backend_kwargs)
         frames = vr.get_batch(indices).asnumpy()
@@ -112,6 +119,8 @@ def get_frames_by_timestamps(
     if video_backend_kwargs is None:
         video_backend_kwargs = {}
 
+    if video_backend == "decord" and decord is None:
+        video_backend = "opencv"
     if video_backend == "decord":
         vr = decord.VideoReader(video_path, **video_backend_kwargs)
         num_frames = len(vr)
@@ -206,6 +215,8 @@ def get_all_frames(
         >>> frames.shape
         (100, 240, 320, 3)
     """
+    if video_backend == "decord" and decord is None:
+        video_backend = "pyav"
     if video_backend == "decord":
         vr = decord.VideoReader(video_path, **video_backend_kwargs)
         frames = vr.get_batch(range(len(vr))).asnumpy()
@@ -378,6 +389,9 @@ def read_frames_decord(
     Returns:
         List of PIL images
     """
+    if VideoReader is None:
+        raise RuntimeError("decord is not installed; use the torchvision_av backend")
+
     if 's3://' in video_path:
         video_bytes = client.get(video_path)
         video_reader = VideoReader(io.BytesIO(video_bytes), num_threads=1)

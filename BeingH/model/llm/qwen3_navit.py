@@ -29,6 +29,27 @@ torch._dynamo.config.accumulated_cache_size_limit = 4096
 flex_attention = torch.compile(flex_attention)
 
 
+def _real_sample_lens(sample_lens: List[int], packed_seq_len: int) -> List[int]:
+    """Drop trailing FlexAttention-only padding samples for dense SDPA."""
+    real_lens = []
+    real_total = 0
+    for sample_len in sample_lens:
+        if real_total == packed_seq_len:
+            break
+        if real_total + sample_len > packed_seq_len:
+            raise ValueError(
+                f"sample lengths cross packed sequence boundary: "
+                f"{real_total} + {sample_len} > {packed_seq_len}"
+            )
+        real_lens.append(sample_len)
+        real_total += sample_len
+    if real_total != packed_seq_len:
+        raise ValueError(
+            f"sample lengths sum to {real_total}, expected {packed_seq_len}"
+        )
+    return real_lens
+
+
 class Qwen3Config(_Qwen3Config):
     model_type = "qwen3"
     keys_to_ignore_at_inference = ["past_key_values"]
@@ -86,14 +107,17 @@ class PackedAttention(Qwen3Attention):
         )
 
         if isinstance(attention_mask, List):
+            real_sample_lens = _real_sample_lens(
+                sample_lens, packed_query_states_.shape[0]
+            )
             packed_key_states_ = packed_key_states_[:, :, None, :].repeat(1, 1, self.num_key_value_groups, 1)
             packed_key_states_ = packed_key_states_.reshape(-1, self.num_heads, self.head_dim)
             packed_value_states = packed_value_states[:, :, None, :].repeat(1, 1, self.num_key_value_groups, 1)
             packed_value_states = packed_value_states.reshape(-1, self.num_heads, self.head_dim)
 
-            unpacked_query_states = packed_query_states_.transpose(0, 1).split(sample_lens, dim=1)
-            unpacked_key_states = packed_key_states_.transpose(0, 1).split(sample_lens, dim=1)
-            unpacked_value_states = packed_value_states.transpose(0, 1).split(sample_lens, dim=1)
+            unpacked_query_states = packed_query_states_.transpose(0, 1).split(real_sample_lens, dim=1)
+            unpacked_key_states = packed_key_states_.transpose(0, 1).split(real_sample_lens, dim=1)
+            unpacked_value_states = packed_value_states.transpose(0, 1).split(real_sample_lens, dim=1)
             upacked_attn_output = []
             for query_states, key_states, value_states, attention_mask_per_sample in zip(
                 unpacked_query_states, unpacked_key_states, unpacked_value_states, attention_mask
@@ -201,14 +225,17 @@ class PackedAttentionMoT(Qwen3Attention):
         )
         
         if isinstance(attention_mask, List):
+            real_sample_lens = _real_sample_lens(
+                sample_lens, packed_query_states_.shape[0]
+            )
             packed_key_states_ = packed_key_states_[:, :, None, :].repeat(1, 1, self.num_key_value_groups, 1)
             packed_key_states_ = packed_key_states_.reshape(-1, self.num_heads, self.head_dim)
             packed_value_states = packed_value_states[:, :, None, :].repeat(1, 1, self.num_key_value_groups, 1)
             packed_value_states = packed_value_states.reshape(-1, self.num_heads, self.head_dim)
 
-            unpacked_query_states = packed_query_states_.transpose(0, 1).split(sample_lens, dim=1)
-            unpacked_key_states = packed_key_states_.transpose(0, 1).split(sample_lens, dim=1)
-            unpacked_value_states = packed_value_states.transpose(0, 1).split(sample_lens, dim=1)
+            unpacked_query_states = packed_query_states_.transpose(0, 1).split(real_sample_lens, dim=1)
+            unpacked_key_states = packed_key_states_.transpose(0, 1).split(real_sample_lens, dim=1)
+            unpacked_value_states = packed_value_states.transpose(0, 1).split(real_sample_lens, dim=1)
             upacked_attn_output = []
             for query_states, key_states, value_states, attention_mask_per_sample in zip(
                 unpacked_query_states, unpacked_key_states, unpacked_value_states, attention_mask

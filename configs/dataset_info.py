@@ -25,6 +25,9 @@ DATASET_INFO = {
         'shadow_grasp_bottle22249179_aug100_2cam': {
             'dataset_path': str(DATA_ROOT / "shadow_grasp_bottle22249179_aug100_2cam"),
         },
+        'shadow_grasp_bottle22249179_aug100_npuvae_2cam': {
+            'dataset_path': str(DATA_ROOT / "shadow_grasp_bottle22249179_aug100_npuvae_2cam"),
+        },
         'sharpa_grasp_bottle22249179_geo_visual100_2cam': {
             'dataset_path': str(DATA_ROOT / "sharpa_grasp_bottle22249179_geo_visual100_2cam"),
         },

@@ -5,6 +5,10 @@
 
 import argparse
 import torch
+try:
+    import torch_npu
+except ImportError:
+    torch_npu = None
 import numpy as np
 import random
 import tyro
@@ -18,6 +22,8 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    elif torch_npu is not None and torch.npu.is_available():
+        torch.npu.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
     print(f"--- Random seed set to {seed} for reproducibility ---")
@@ -96,7 +102,12 @@ def main(args: ServerArgs):
     set_seed(args.seed)
 
     # Determine device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch_npu is not None and torch.npu.is_available():
+        device = "npu"
+    else:
+        device = "cpu"
     print(f"Running policy on device: {device}")
 
     if args.prompt_template == "short":

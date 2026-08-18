@@ -7,7 +7,14 @@ from torch import nn
 from transformers.activations import ACT2FN
 from .siglip.configuration_siglip import SiglipVisionConfig as _SiglipVisionConfig
 from .siglip.modeling_siglip import SiglipAttention, SiglipPreTrainedModel
-from flash_attn import flash_attn_varlen_func
+try:
+    from flash_attn import flash_attn_varlen_func
+except ImportError:
+    def flash_attn_varlen_func(*args, **kwargs):
+        raise RuntimeError(
+            "SigLIP NaViT requires flash-attn and is unavailable in the "
+            "Ascend NPU environment."
+        )
 
 
 class SiglipVisionConfig(_SiglipVisionConfig):

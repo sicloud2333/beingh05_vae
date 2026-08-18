@@ -24,6 +24,11 @@ from torch.distributed.fsdp import (
 )
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from safetensors.torch import load_file, save_file
+
+try:
+    import torch_npu  # noqa: F401
+except ImportError:
+    torch_npu = None
  
 from BeingH.model.vit_model.internvit.modeling_intern_vit import (
     InternVisionEncoderLayer,
@@ -108,11 +113,26 @@ def fsdp_wrapper(model: torch.nn.Module, fsdp_config: FSDPConfig) -> FSDP:
         FSDP-wrapped model
     """
 
+    device_type = os.environ.get(
+        "BEINGH_DEVICE_TYPE",
+        "cuda" if torch.cuda.is_available() else "npu",
+    )
+    if device_type not in {"cuda", "npu"}:
+        raise ValueError("BEINGH_DEVICE_TYPE must be 'cuda' or 'npu'")
+    accelerator = getattr(torch, device_type)
+    local_rank = int(os.environ.get("LOCAL_RANK", dist.get_rank()))
+    if local_rank >= accelerator.device_count():
+        raise RuntimeError(
+            f"LOCAL_RANK={local_rank}, but only {accelerator.device_count()} "
+            f"{device_type} device(s) are visible"
+        )
+    device = torch.device(device_type, local_rank)
+
     # Initialize device mesh for HYBRID_SHARD strategy
     device_mesh = None
     if fsdp_config.sharding_strategy == 'HYBRID_SHARD':
         device_mesh = init_device_mesh(
-            "cuda", 
+            device_type,
             mesh_shape=(fsdp_config.num_replicate, fsdp_config.num_shard),
             mesh_dim_names=("replicate", "shard")
         )
@@ -129,7 +149,7 @@ def fsdp_wrapper(model: torch.nn.Module, fsdp_config: FSDPConfig) -> FSDP:
             reduce_dtype=torch.bfloat16,
             buffer_dtype=torch.bfloat16,
         ),
-        device_id=dist.get_rank() % torch.cuda.device_count(),
+        device_id=device,
         sharding_strategy=ShardingStrategy[fsdp_config.sharding_strategy],
         backward_prefetch=BackwardPrefetch[fsdp_config.backward_prefetch],
         cpu_offload=CPUOffload(offload_params=fsdp_config.cpu_offload),
@@ -452,7 +472,7 @@ class FSDPCheckpoint:
         if resume_from is None or not os.path.exists(resume_from):
             return optimizer, scheduler, 0
             
-        if fsdp_config.sharding_strategy == "FULL_SHARD":
+        if fsdp_config.sharding_strategy in ["FULL_SHARD", "SHARD_GRAD_OP"]:
             shard_index = dist.get_rank()
             total_shards = dist.get_world_size()
         elif fsdp_config.sharding_strategy == "HYBRID_SHARD":
@@ -476,8 +496,9 @@ class FSDPCheckpoint:
         del scheduler_state_dict
 
         # Get training step
-        train_steps = int(os.path.basename(os.path.normpath(resume_from))) + 1    
+        # Checkpoint directory names represent optimizer steps already
+        # completed. The training loop resumes from exactly this count and
+        # labels the next optimizer update train_steps + 1.
+        train_steps = int(os.path.basename(os.path.normpath(resume_from)))
 
         return optimizer, scheduler, train_steps
-
-

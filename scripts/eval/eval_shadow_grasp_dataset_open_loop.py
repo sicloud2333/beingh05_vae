@@ -5,6 +5,7 @@ import argparse
 import json
 import random
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -455,6 +456,70 @@ def predict_chunk(
     if not np.isfinite(chunk).all():
         raise ValueError("Prediction contains NaN or Inf")
     return chunk.astype(np.float32)
+
+
+def summarize_query_timing(
+    latencies_seconds: list[float],
+    *,
+    num_predicted_actions: int,
+    num_executed_actions: int,
+    include_cold_warm_split: bool,
+) -> dict[str, Any]:
+    """Summarize end-to-end policy query wall time.
+
+    A query includes observation preparation, ``policy.get_action`` and output
+    conversion back to NumPy.  The latter synchronizes accelerator work, so the
+    wall-clock measurement represents deployment-visible latency rather than
+    asynchronous kernel enqueue time.
+    """
+    if not latencies_seconds:
+        raise ValueError("At least one policy-query latency is required")
+    values = np.asarray(latencies_seconds, dtype=np.float64)
+    if not np.isfinite(values).all() or np.any(values <= 0.0):
+        raise ValueError("Policy-query latencies must be finite and positive")
+
+    total_seconds = float(values.sum())
+    timing: dict[str, Any] = {
+        "scope": (
+            "end-to-end wall time around observation preparation, "
+            "policy.get_action, and NumPy output conversion"
+        ),
+        "clock": "time.perf_counter",
+        "num_queries": int(values.size),
+        "num_predicted_actions": int(num_predicted_actions),
+        "num_executed_actions": int(num_executed_actions),
+        "total_query_seconds": total_seconds,
+        "latency_ms": {
+            "mean": float(values.mean() * 1_000.0),
+            "p50": float(np.percentile(values, 50.0) * 1_000.0),
+            "p95": float(np.percentile(values, 95.0) * 1_000.0),
+            "min": float(values.min() * 1_000.0),
+            "max": float(values.max() * 1_000.0),
+        },
+        "throughput": {
+            "queries_per_second": float(values.size / total_seconds),
+            "predicted_actions_per_second": float(
+                num_predicted_actions / total_seconds
+            ),
+            "executed_actions_per_second": float(
+                num_executed_actions / total_seconds
+            ),
+        },
+        "latencies_seconds": [float(value) for value in values],
+    }
+    if include_cold_warm_split:
+        timing["cold_first_query_ms"] = float(values[0] * 1_000.0)
+        warm = values[1:]
+        timing["warm_query_count"] = int(warm.size)
+        if warm.size:
+            timing["warm_latency_ms"] = {
+                "mean": float(warm.mean() * 1_000.0),
+                "p50": float(np.percentile(warm, 50.0) * 1_000.0),
+                "p95": float(np.percentile(warm, 95.0) * 1_000.0),
+                "min": float(warm.min() * 1_000.0),
+                "max": float(warm.max() * 1_000.0),
+            }
+    return timing
 
 
 def rmse(prediction: np.ndarray, target: np.ndarray) -> float:
@@ -1142,6 +1207,7 @@ def evaluate_episode(
     executed_targets: list[np.ndarray] = []
     executed_frame_indices: list[np.ndarray] = []
     predicted_chunks: list[np.ndarray] = []
+    query_latencies_seconds: list[float] = []
 
     for query_number, frame_index in enumerate(query_indices, start=1):
         if args.noise_mode == "fixed_per_query":
@@ -1150,6 +1216,9 @@ def evaluate_episode(
             torch.manual_seed(args.seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(args.seed)
+            elif hasattr(torch, "npu") and torch.npu.is_available():
+                torch.npu.manual_seed_all(args.seed)
+        query_started_at = time.perf_counter()
         chunk = predict_chunk(
             policy,
             states[frame_index],
@@ -1159,6 +1228,8 @@ def evaluate_episode(
             },
             instruction,
         )
+        query_latency_seconds = time.perf_counter() - query_started_at
+        query_latencies_seconds.append(query_latency_seconds)
         predicted_chunks.append(chunk)
         execute_length = min(
             args.exec_horizon,
@@ -1174,7 +1245,8 @@ def evaluate_episode(
         )
         print(
             f"episode {episode_index} query {query_number}/{len(query_indices)}: "
-            f"frame={frame_index}, executed={execute_length}"
+            f"frame={frame_index}, executed={execute_length}, "
+            f"latency={query_latency_seconds * 1_000.0:.2f}ms"
         )
 
     prediction = np.concatenate(executed_predictions, axis=0)
@@ -1218,6 +1290,12 @@ def evaluate_episode(
             "seed": args.seed,
             "noise_mode": args.noise_mode,
         },
+        "query_timing": summarize_query_timing(
+            query_latencies_seconds,
+            num_predicted_actions=sum(len(chunk) for chunk in predicted_chunks),
+            num_executed_actions=len(prediction),
+            include_cold_warm_split=False,
+        ),
     }
     metrics.update(
         compute_action_metrics(
@@ -1277,6 +1355,8 @@ def evaluate_episode(
         "output": output,
         "metrics_path": metrics_path,
         "plot_output": plot_output,
+        "query_latencies_seconds": query_latencies_seconds,
+        "num_predicted_actions": sum(len(chunk) for chunk in predicted_chunks),
     }
 
 
@@ -1297,6 +1377,17 @@ def main() -> None:
 
     import pandas as pd
     import torch
+    if str(args.device).startswith("npu"):
+        try:
+            import torch_npu  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "--device npu:* requires torch_npu in the selected Python environment"
+            ) from exc
+        if not torch.npu.is_available():
+            raise RuntimeError(
+                f"Requested {args.device}, but torch_npu reports no available NPU"
+            )
 
     from BeingH.inference.beingh_policy import BeingHPolicy
     from BeingH.inference.checkpoint_data_config import (
@@ -1309,6 +1400,8 @@ def main() -> None:
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
+    elif hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.manual_seed_all(args.seed)
 
     checkpoint = resolve_checkpoint(args.model_path)
     validate_checkpoint(checkpoint)
@@ -1385,6 +1478,19 @@ def main() -> None:
             all_targets,
             include_xyz_equivalent=args.include_xyz_equivalent,
         )
+        all_query_latencies_seconds = [
+            latency
+            for result in results
+            for latency in result["query_latencies_seconds"]
+        ]
+        aggregate_query_timing = summarize_query_timing(
+            all_query_latencies_seconds,
+            num_predicted_actions=sum(
+                result["num_predicted_actions"] for result in results
+            ),
+            num_executed_actions=len(all_predictions),
+            include_cold_warm_split=True,
+        )
         summary = {
             "checkpoint": str(checkpoint),
             "dataset": str(dataset_path),
@@ -1395,6 +1501,7 @@ def main() -> None:
             "exec_horizon": args.exec_horizon,
             "inference_config": results[0]["metrics"]["inference_config"],
             "aggregate_metrics": aggregate_metrics,
+            "aggregate_query_timing": aggregate_query_timing,
             "episodes": [result["metrics"] for result in results],
         }
         if args.summary_output is None:

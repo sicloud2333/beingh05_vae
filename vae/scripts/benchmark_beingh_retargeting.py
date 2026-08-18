@@ -31,6 +31,15 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--vae-model-path", type=Path, required=True)
+    parser.add_argument(
+        "--vae-checkpoint",
+        type=Path,
+        default=REPO_ROOT / "vae/checkpoints/native_n2_epoch800_inference.pt",
+        help=(
+            "NativeVAE inference checkpoint used to decode the VAE chain. "
+            "Pass the checkpoint paired with --vae-model-path for formal runs."
+        ),
+    )
     parser.add_argument("--geometry-model-path", type=Path, required=True)
     parser.add_argument(
         "--joint-model-path", type=Path, required=True,
@@ -101,6 +110,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"Python executable not found: {args.python}")
     if not args.dataset.exists():
         raise FileNotFoundError(f"Evaluation dataset not found: {args.dataset}")
+    if not args.vae_checkpoint.is_file():
+        raise FileNotFoundError(
+            f"NativeVAE checkpoint not found: {args.vae_checkpoint}"
+        )
     for label, path in (
         ("VAE model", args.vae_model_path),
         ("geometry model", args.geometry_model_path),
@@ -147,7 +160,9 @@ def build_eval_command(
         "joint": args.joint_model_path,
     }[chain]
     command = [
-        str(args.python.resolve()),
+        # Preserve virtual-environment launcher symlinks. Resolving them can
+        # escape the venv and run the base interpreter without its packages.
+        str(args.python.absolute()),
         "-u",
         str(EVAL_SCRIPT),
         "--deployment-profile",
@@ -207,6 +222,10 @@ def build_eval_command(
                 "--geometry-max-iterations",
                 str(args.geometry_max_iterations),
             ]
+        )
+    if chain == "vae":
+        command.extend(
+            ["--vae-checkpoint", str(args.vae_checkpoint.resolve())]
         )
     return command
 
@@ -460,6 +479,7 @@ def main() -> None:
     report = {
         "configuration": {
             "vae_model_path": str(args.vae_model_path.resolve()),
+            "vae_checkpoint": str(args.vae_checkpoint.resolve()),
             "geometry_model_path": str(args.geometry_model_path.resolve()),
             "joint_model_path": str(args.joint_model_path.resolve()),
             "dataset": str(args.dataset.resolve()),

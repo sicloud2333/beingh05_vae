@@ -21,6 +21,11 @@ import pytz
 import torch
 import torch.distributed as dist
 import yaml
+
+try:
+    import torch_npu  # noqa: F401
+except ImportError:
+    torch_npu = None
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
@@ -443,13 +448,56 @@ class TrainingArguments(TrainingArguments):
 # Helper Functions
 # ==============================================================================
 
-def setup_distributed():
-    """Initialize distributed training environment."""
-    dist.init_process_group("nccl")
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-    return dist.get_rank() % torch.cuda.device_count()
+def accelerator_type() -> str:
+    """Return the requested accelerator while preserving CUDA defaults."""
+    requested = os.environ.get("BEINGH_DEVICE_TYPE")
+    if requested:
+        if requested not in {"cuda", "npu"}:
+            raise ValueError("BEINGH_DEVICE_TYPE must be 'cuda' or 'npu'")
+        return requested
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        return "npu"
+    raise RuntimeError("Being-H training requires an available CUDA or NPU device")
+
+
+def accelerator_module(device: torch.device):
+    return getattr(torch, device.type)
+
+
+def accelerator_synchronize(device: torch.device) -> None:
+    accelerator_module(device).synchronize()
+
+
+def accelerator_empty_cache(device: torch.device) -> None:
+    accelerator_module(device).empty_cache()
+
+
+def accelerator_max_memory_reserved(device: torch.device) -> int:
+    return int(accelerator_module(device).max_memory_reserved())
+
+
+def setup_distributed() -> torch.device:
+    """Initialize NCCL/CUDA or HCCL/Ascend distributed training."""
+    device_type = accelerator_type()
+    backend = os.environ.get(
+        "BEINGH_DIST_BACKEND", "hccl" if device_type == "npu" else "nccl"
+    )
+    dist.init_process_group(backend)
+    local_rank = int(os.environ.get("LOCAL_RANK", dist.get_rank()))
+    accelerator = getattr(torch, device_type)
+    if local_rank >= accelerator.device_count():
+        raise RuntimeError(
+            f"LOCAL_RANK={local_rank}, but only {accelerator.device_count()} "
+            f"{device_type} device(s) are visible"
+        )
+    accelerator.set_device(local_rank)
+    if device_type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+    return torch.device(device_type, local_rank)
 
 
 def setup_logging(output_dir: str, rank: int) -> logging.Logger:
@@ -1107,8 +1155,8 @@ def main():
         )
 
     # Create optimizer and scheduler. Frozen parameters never receive gradients;
-    # excluding them avoids needless optimizer scans and guarantees that fused
-    # AdamW only sees trainable CUDA tensors.
+    # excluding them avoids needless optimizer scans. PyTorch's fused AdamW is
+    # CUDA-specific in the supported training stack, so NPU launchers disable it.
     optimizer_parameters = [
         parameter for parameter in model.parameters() if parameter.requires_grad
     ]
@@ -1157,29 +1205,44 @@ def main():
     optimizer.zero_grad()
     
     #set_seed(training_args.seed)
-    if not os.path.exists("configs/rng_state.pkl"):
-        rng_state = {'torch_cpu': torch.get_rng_state(),'torch_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None}
-        with open("configs/rng_state.pkl", 'wb') as f:
+    rng_state_path = Path(training_args.output_dir) / "run_config" / (
+        f"rng_state_rank{dist.get_rank():02d}.pkl"
+    )
+    rng_state_path.parent.mkdir(parents=True, exist_ok=True)
+    accelerator = accelerator_module(device)
+    accelerator_key = f"torch_{device.type}"
+    if not rng_state_path.exists():
+        rng_state = {
+            'torch_cpu': torch.get_rng_state(),
+            accelerator_key: accelerator.get_rng_state_all(),
+        }
+        with rng_state_path.open('wb') as f:
             pkl.dump(rng_state, f)
     else:
-        rng_state = pkl.load(open("configs/rng_state.pkl", "rb"))
+        with rng_state_path.open("rb") as f:
+            rng_state = pkl.load(f)
         torch.set_rng_state(rng_state['torch_cpu'])
-        torch.cuda.set_rng_state_all(rng_state['torch_cuda'])
+        accelerator.set_rng_state_all(rng_state[accelerator_key])
 
     accum_action_loss, accum_flow_action_loss = 0, 0
     accum_temporal_delta_loss, accum_ce_loss = 0, 0
     total_norm = torch.tensor(0.0, device=device)
 
-    for micro_step, data in enumerate(train_loader, start=0):
-        curr_step = micro_step // training_args.gradient_accumulation_steps
+    start_micro_step = train_step * training_args.gradient_accumulation_steps
+    for micro_step, data in enumerate(train_loader, start=start_micro_step):
+        # Number of optimizer steps completed after this micro batch. This is
+        # zero until the first gradient-accumulation window is complete.
+        curr_step = (
+            (micro_step + 1) // training_args.gradient_accumulation_steps
+        )
 
         # Move data to device
-        data = data.cuda(device).to_dict()
+        data = data.to(device).to_dict()
         window_local_samples += int(data['num_gen_samples'])
         window_local_tokens += int(data['sequence_length'])
 
         # Forward pass
-        with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
+        with torch.amp.autocast(device.type, enabled=True, dtype=torch.bfloat16):
             loss_dict = fsdp_model(**data)
             action_loss = loss_dict['action_loss']
             flow_action_loss = loss_dict.get('flow_action_loss', action_loss)
@@ -1215,7 +1278,7 @@ def main():
             
             if curr_step>0 and curr_step % training_args.logging_steps==0:
                 """Log training metrics to console and TensorBoard."""
-                torch.cuda.synchronize()
+                accelerator_synchronize(device)
 
                 log_time = time()
                 elapsed_time_total = log_time - loop_start_time
@@ -1228,7 +1291,10 @@ def main():
 
                 window_stats = torch.tensor(
                     [window_local_samples, window_local_tokens],
-                    dtype=torch.float64,
+                    # HCCL does not support float64 reductions. Float32 is
+                    # ample for per-logging-window sample/token counters and
+                    # keeps this metric path portable across CUDA and NPU.
+                    dtype=torch.float32,
                     device=device,
                 )
                 dist.all_reduce(window_stats, op=dist.ReduceOp.SUM)
@@ -1279,7 +1345,10 @@ def main():
                 dist.all_reduce(avg_und_loss, op=dist.ReduceOp.SUM)
                 avg_und_loss = avg_und_loss.item() / world_size
                 
-                mem_cache = torch.tensor(torch.cuda.max_memory_reserved() / 1024**2, device=device)
+                mem_cache = torch.tensor(
+                    accelerator_max_memory_reserved(device) / 1024**2,
+                    device=device,
+                )
                 dist.all_reduce(mem_cache, op=dist.ReduceOp.MAX)
 
                 message = (
@@ -1348,7 +1417,7 @@ def main():
                 window_local_samples = 0
                 window_local_tokens = 0
                 
-            if curr_step > training_args.save_steps_start and curr_step % training_args.save_steps == 0:
+            if curr_step >= training_args.save_steps_start and curr_step % training_args.save_steps == 0:
                 # Get dataset name for metadata copying
                 dataset_name = list(dataset_meta.keys())[0] if dataset_meta else None
                 FSDPCheckpoint.fsdp_save_ckpt(
@@ -1364,10 +1433,10 @@ def main():
                 )
 
                 gc.collect()
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
+                accelerator_empty_cache(device)
+                accelerator_synchronize(device)
         
-        if curr_step > training_args.max_steps:
+        if curr_step >= training_args.max_steps:
             logger.info(f"Reached total_steps={training_args.max_steps}, stopping training.")
             break
     
@@ -1396,8 +1465,8 @@ def main():
         
         gc.collect()
         dist.barrier()
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        accelerator_empty_cache(device)
+        accelerator_synchronize(device)
         
         logger.info(f"Final checkpoint saved at step {curr_step}")
           

@@ -12,6 +12,12 @@ cd "${REPO_ROOT}"
 source "${SCRIPT_DIR}/train_common.sh"
 
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+ACCELERATOR="${ACCELERATOR:-cuda}"
+if [[ "${ACCELERATOR}" != "cuda" && "${ACCELERATOR}" != "npu" ]]; then
+  printf '[shadow-grasp] ERROR: ACCELERATOR must be cuda or npu, got: %s\n' \
+    "${ACCELERATOR}" >&2
+  exit 2
+fi
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export NO_ALBUMENTATIONS_UPDATE=1
@@ -100,9 +106,19 @@ GENERATE_STATS="${GENERATE_STATS:-True}"
 #   0-3 = A100-SXM4-80GB
 #   4   = H100 PCIe
 #
-# Use A100 devices 1 and 2 by default. Verify both are free before launching.
+# Use A100 devices 1 and 2 by default. Ascend uses logical devices 0 and 1.
 # =============================================================================
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1,2}"
+if [[ "${ACCELERATOR}" == "npu" ]]; then
+  export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-0,1}"
+  export BEINGH_DEVICE_TYPE=npu
+  export BEINGH_DIST_BACKEND=hccl
+  VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES}"
+else
+  export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1,2}"
+  export BEINGH_DEVICE_TYPE=cuda
+  export BEINGH_DIST_BACKEND=nccl
+  VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}"
+fi
 NUM_GPUS="${NUM_GPUS:-2}"
 MASTER_PORT="${MASTER_PORT:-29107}"
 
@@ -114,11 +130,16 @@ MAX_STEPS="${MAX_STEPS:-40000}"
 SAVE_STEPS="${SAVE_STEPS:-5000}"
 SAVE_STEPS_START="${SAVE_STEPS_START:-15000}"
 SAVE_MODEL_ONLY="${SAVE_MODEL_ONLY:-True}"
+RESUME_MODEL_ONLY="${RESUME_MODEL_ONLY:-True}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-5}"
 WARMUP_RATIO="${WARMUP_RATIO:-0.05}"
 LOGGING_STEPS="${LOGGING_STEPS:-10}"
-FUSED_OPTIMIZER="${FUSED_OPTIMIZER:-True}"
+if [[ "${ACCELERATOR}" == "npu" ]]; then
+  FUSED_OPTIMIZER="${FUSED_OPTIMIZER:-False}"
+else
+  FUSED_OPTIMIZER="${FUSED_OPTIMIZER:-True}"
+fi
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 SHARDING_STRATEGY="${SHARDING_STRATEGY:-SHARD_GRAD_OP}"
 
@@ -196,7 +217,7 @@ if [[ "${SMOKE_TEST}" == "True" || "${SMOKE_TEST}" == "true" ]]; then
   MAX_STEPS="${SMOKE_MAX_STEPS:-20}"
   SAVE_STEPS="${SMOKE_SAVE_STEPS:-20}"
   SAVE_STEPS_START="${SMOKE_SAVE_STEPS_START:-0}"
-  SAVE_MODEL_ONLY=True
+  SAVE_MODEL_ONLY="${SMOKE_SAVE_MODEL_ONLY:-True}"
   NUM_WORKERS="${SMOKE_NUM_WORKERS:-2}"
   PREFETCH_FACTOR="${SMOKE_PREFETCH_FACTOR:-2}"
 fi
@@ -251,10 +272,16 @@ VIDEO_COUNT="$(find "${DATASET_PATH}/videos" -type f -name '*.mp4' | wc -l)"
 (( PARQUET_COUNT > 0 )) || die "No parquet files found under ${DATASET_PATH}/data"
 (( VIDEO_COUNT > 0 )) || die "No MP4 files found under ${DATASET_PATH}/videos"
 
-IFS=',' read -r -a SELECTED_GPUS <<< "${CUDA_VISIBLE_DEVICES}"
+IFS=',' read -r -a SELECTED_GPUS <<< "${VISIBLE_DEVICES}"
 (( NUM_GPUS > 0 )) || die "NUM_GPUS must be positive"
 (( NUM_GPUS <= ${#SELECTED_GPUS[@]} )) \
-  || die "NUM_GPUS=${NUM_GPUS}, but CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+  || die "NUM_GPUS=${NUM_GPUS}, but visible devices=${VISIBLE_DEVICES}"
+
+if [[ "${ACCELERATOR}" == "npu" ]]; then
+  "${PYTHON_BIN}" -c \
+    'import torch, torch_npu; assert torch.npu.is_available(), "NPU unavailable"' \
+    || die "torch_npu is unavailable in ${PYTHON_BIN}"
+fi
 
 for integer_value in \
   "${MAX_STEPS}" "${SAVE_STEPS}" "${SAVE_STEPS_START}" \
@@ -310,8 +337,9 @@ log "Data config: ${DATASET_CONFIG_FILE}; normalization=${NORMALIZATION}"
 log "InternVL: ${PRETRAIN_MODEL}"
 log "Expert: ${EXPERT_MODEL}"
 log "Resume: ${RESUME_PATH}"
-log "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}; ranks=${NUM_GPUS}"
+log "Accelerator=${ACCELERATOR}; visible_devices=${VISIBLE_DEVICES}; ranks=${NUM_GPUS}"
 log "Steps=${MAX_STEPS}; save_every=${SAVE_STEPS}; save_start=${SAVE_STEPS_START}"
+log "Checkpoint: save_model_only=${SAVE_MODEL_ONLY}; resume_model_only=${RESUME_MODEL_ONLY}"
 log "Packed tokens: target=${EXPECTED_NUM_TOKENS}; hard_max=${MAX_NUM_TOKENS}"
 log "Workers/rank=${NUM_WORKERS}; prefetch=${PREFETCH_FACTOR}; fused AdamW=${FUSED_OPTIMIZER}"
 log "FSDP=${SHARDING_STRATEGY}; grad_accum=${GRADIENT_ACCUMULATION_STEPS}"
@@ -371,7 +399,7 @@ log "Log: ${LOG_FILE}"
   --mllm_path "${PRETRAIN_MODEL}" \
   --expert_path "${EXPERT_MODEL}" \
   --resume_from "${RESUME_PATH}" \
-  --resume_model_only True \
+  --resume_model_only "${RESUME_MODEL_ONLY}" \
   --layer_module Qwen3MoTDecoderLayer \
   --use_expert True \
   --use_flow_matching True \

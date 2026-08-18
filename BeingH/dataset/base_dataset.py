@@ -535,7 +535,7 @@ class SimpleCustomBatch:
 
         return self
 
-    def cuda(self, device):
+    def to(self, device):
         self.packed_text_ids = self.packed_text_ids.to(device)
         self.packed_text_indexes = self.packed_text_indexes.to(device)
         self.packed_position_ids = self.packed_position_ids.to(device)
@@ -562,6 +562,10 @@ class SimpleCustomBatch:
             self.embodiment_ids = self.embodiment_ids.to(device)
 
         return self
+
+    def cuda(self, device):
+        """Backward-compatible alias for callers that still use CUDA naming."""
+        return self.to(device)
 
     def to_dict(self):
         data = dict(
@@ -605,4 +609,3 @@ def collate_wrapper():
     def collate_fn(batch):
         return SimpleCustomBatch(batch)
     return collate_fn
-

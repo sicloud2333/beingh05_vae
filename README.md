@@ -169,6 +169,10 @@ bash scripts/eval/eval_shadow_open_loop.sh \
   --episode-indices 0 1 2 3
 ```
 
+Ascend NPU setup and the one-query reproduction path are documented in [docs/npu_inference.md](docs/npu_inference.md).
+The full NativeVAE-to-Being-H05 training and verification runbook is in
+[docs/npu_vae_training.md](docs/npu_vae_training.md).
+
 ## MuJoCo evaluation
 
 ```bash

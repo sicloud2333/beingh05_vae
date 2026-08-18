@@ -15,7 +15,14 @@ from torch.nn.attention.flex_attention import flex_attention
 from torch.nn.functional import scaled_dot_product_attention
 from transformers.utils import ModelOutput
 
-from flash_attn import flash_attn_varlen_func
+try:
+    from flash_attn import flash_attn_varlen_func
+except ImportError:
+    def flash_attn_varlen_func(*args, **kwargs):
+        raise RuntimeError(
+            "Qwen2 NaViT requires flash-attn; use the Qwen3 Being-H0.5 "
+            "checkpoint on Ascend NPU."
+        )
 from BeingH.model.llm.qwen2.modeling_qwen2 import (
     Qwen2Attention, 
     Qwen2MLP, 
